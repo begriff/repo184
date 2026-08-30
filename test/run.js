@@ -517,6 +517,7 @@ async function serviceTests(testDirectory) {
 
   const legacyState = util.clone(snapshot);
   legacyState.assignments.forEach(function removeWriteupAssignmentFields(item) {
+    delete item.archived;
     delete item.generateWriteupRepo;
     delete item.writeupTemplateOwner;
     delete item.writeupTemplateRepo;
@@ -524,6 +525,10 @@ async function serviceTests(testDirectory) {
     delete item.writeupTemplateRepoId;
   });
   legacyState.workUnits.forEach(function removeWriteupWorkUnitFields(item) {
+    delete item.deletionError;
+    delete item.codeDeletedAt;
+    delete item.writeupDeletedAt;
+    delete item.deletionClaimsAssignment;
     delete item.templateReportedRepoId;
     Object.keys(item).filter(function writeupField(key) {
       return key.indexOf('writeup') === 0;
@@ -547,7 +552,126 @@ async function serviceTests(testDirectory) {
   assert(migratedUnit.teamSlug);
   assert(migratedUnit.joinCode);
   assert.strictEqual(migratedSnapshot.assignments[0].generateWriteupRepo, false);
+  assert.strictEqual(migratedSnapshot.assignments[0].archived, false);
   assert.strictEqual(migratedUnit.writeupRepoStatus, 'disabled');
+  assert.strictEqual(migratedUnit.deletionError, '');
+  assert.strictEqual(migratedUnit.deletionClaimsAssignment, false);
+}
+
+async function adminControlServiceTests(testDirectory) {
+  const config = configModule.loadConfig({
+    nodeEnv: 'development',
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1:3000/repo',
+    sessionSecret: 'admin-control-test-session-secret-123456',
+    adminPassword: 'local-admin',
+    dataFile: path.join(testDirectory, 'admin-controls.json'),
+    devFakeGithub: true
+  });
+  const store = new storeModule.JsonStore(config.dataFile);
+  const github = new githubModule.FakeGitHubClient(config);
+  const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
+  await store.init();
+  const student = await addUser(service, github, 'admin-tools-student', 'active');
+  const secondStudent = await addUser(service, github, 'admin-tools-second', 'active');
+  const assignment = await service.createAssignment({
+    slug: 'admin-hw',
+    title: 'Admin Homework',
+    template: 'cal-cs184-student/admin-hw-template',
+    generateWriteupRepo: '1',
+    writeupTemplate: 'cal-cs184-student/admin-hw-writeup-template',
+    repoPrefix: 'admin-hw',
+    maxTeamSize: '2',
+    status: 'open'
+  }, 'admin');
+  const emptyAssignment = await service.createAssignment({
+    slug: 'empty-hw',
+    title: 'Empty Homework',
+    template: 'cal-cs184-student/empty-hw-template',
+    repoPrefix: 'empty-hw',
+    maxTeamSize: '1',
+    status: 'closed'
+  }, 'admin');
+
+  await service.setAssignmentArchived(assignment.id, true, 'admin');
+  assert.strictEqual((await service.getDashboard(student.id)).assignments.length, 1,
+    'archived assignments must be hidden from the student dashboard');
+  await expectError(service.getAssignmentView('admin-hw', student.id), 'assignment_not_found');
+  await expectError(service.createWorkUnit('admin-hw', student.id, 'Hidden Team'), 'assignment_not_found');
+  await service.setAssignmentArchived(assignment.id, false, 'admin');
+  assert((await service.getDashboard(student.id)).assignments.some(function visible(row) {
+    return row.assignment.slug === 'admin-hw';
+  }));
+
+  await expectError(service.deleteEmptyAssignment(emptyAssignment.id, 'wrong', 'admin'), 'assignment_deletion_not_confirmed');
+  await service.deleteEmptyAssignment(emptyAssignment.id, 'empty-hw', 'admin');
+  assert.strictEqual((await service.getAdminView()).assignments.some(function present(item) {
+    return item.id === emptyAssignment.id;
+  }), false);
+
+  const team = await service.createWorkUnit('admin-hw', student.id, 'Delete Test');
+  await service.setAssignmentArchived(assignment.id, true, 'admin');
+  assert.strictEqual(await service.getStudentWorkUnit(team.id, student.id), null);
+  await service.setAssignmentArchived(assignment.id, false, 'admin');
+  await expectError(service.deleteEmptyAssignment(assignment.id, 'admin-hw', 'admin'), 'assignment_not_empty');
+  await store.transaction(function makeRetryable(state) {
+    const unit = state.workUnits.find(function match(item) { return item.id === team.id; });
+    unit.repoError = 'temporary setup failure';
+  });
+  const retryResult = await service.retryAssignmentWorkUnits(assignment.id, 'admin');
+  assert.deepStrictEqual(retryResult, { attempted: 1, ready: 1, stillNeedsAttention: 0 });
+  assert.strictEqual((await service.getWorkUnit(team.id)).repoError, '');
+
+  await expectError(service.deleteWorkUnit(team.id, 'wrong-name', 'admin'), 'repository_deletion_not_confirmed');
+  const writeupRepository = github.repositories[team.writeupRepoName];
+  const writeupRepositoryId = writeupRepository.id;
+  writeupRepository.id = writeupRepositoryId + 1000;
+  await expectError(service.deleteWorkUnit(team.id, team.repoName, 'admin'), 'work_unit_deletion_failed');
+  let deletionPending = await service.getWorkUnit(team.id);
+  assert.strictEqual(deletionPending.lifecycle, 'deletion_pending');
+  assert.strictEqual(Boolean(github.repositories[team.repoName]), true,
+    'an identity mismatch must not delete the code repository');
+  assert.strictEqual(Boolean(github.repositories[team.writeupRepoName]), true,
+    'an identity mismatch must not delete the replacement write-up repository');
+  writeupRepository.id = writeupRepositoryId;
+
+  const originalDeleteRepository = github.deleteRepository.bind(github);
+  github.deleteRepository = async function failCodeDeletion(repoName) {
+    if (repoName === team.repoName) {
+      throw new Error('temporary repository deletion failure');
+    }
+    return originalDeleteRepository(repoName);
+  };
+  await expectError(service.deleteWorkUnit(team.id, team.repoName, 'admin'), 'work_unit_deletion_failed');
+  deletionPending = await service.getWorkUnit(team.id);
+  assert(deletionPending.writeupDeletedAt, 'completed write-up deletion must be saved before a later failure');
+  assert.strictEqual(deletionPending.codeDeletedAt, '');
+  assert.strictEqual(github.repositories[team.writeupRepoName], undefined);
+  assert.strictEqual(Boolean(github.repositories[team.repoName]), true);
+  github.deleteRepository = originalDeleteRepository;
+
+  const deleted = await service.deleteWorkUnit(team.id, team.repoName, 'admin');
+  assert.strictEqual(deleted.repoName, team.repoName);
+  assert.strictEqual(await service.getWorkUnit(team.id), null);
+  assert.strictEqual(github.repositories[team.repoName], undefined);
+  const deletionAudit = (await store.snapshot()).audit.find(function deletedEvent(item) {
+    return item.action === 'work_unit.deleted' && item.details.workUnitId === team.id;
+  });
+  assert(deletionAudit);
+  assert.strictEqual(deletionAudit.details.assignmentSlug, 'admin-hw');
+  assert.deepStrictEqual(deletionAudit.details.memberLogins, ['admin-tools-student']);
+
+  const reusedName = await service.createWorkUnit('admin-hw', student.id, 'Delete Test');
+  assert.strictEqual(reusedName.repoName, team.repoName,
+    'a fully deleted record and repository name must be reusable');
+
+  const releasedTeam = await service.createWorkUnit('admin-hw', secondStudent.id, 'Released Delete');
+  await service.releaseWorkUnit(releasedTeam.id, 'admin');
+  const replacementTeam = await service.createWorkUnit('admin-hw', secondStudent.id, 'Replacement Active');
+  assert.strictEqual(replacementTeam.lifecycle, 'active');
+  await service.deleteWorkUnit(releasedTeam.id, releasedTeam.repoName, 'admin');
+  assert.strictEqual((await service.getWorkUnit(replacementTeam.id)).lifecycle, 'active',
+    'deleting a released record must not reclaim or disturb the student\'s current assignment');
 }
 
 function singleInstanceTests(testDirectory) {
@@ -803,6 +927,17 @@ async function githubTransportTests() {
   assert.strictEqual(pages.htmlUrl, 'https://cal-cs184-student.github.io/hw1-team-writeup/');
   assert.deepStrictEqual(pagesCalls.map(function method(call) { return call.method; }), ['GET', 'POST']);
   assert.deepStrictEqual(pagesCalls[1].body, { source: { branch: 'main', path: '/docs' } });
+
+  const deletionClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  const deletionCalls = [];
+  deletionClient.appRequest = async function deletionRequest(requestPath, method, body, options) {
+    deletionCalls.push({ path: requestPath, method: method, body: body, options: options });
+    return { status: 204, body: null };
+  };
+  await deletionClient.deleteRepository('hw1-team');
+  assert.strictEqual(deletionCalls[0].path, '/repos/cal-cs184-student/hw1-team');
+  assert.strictEqual(deletionCalls[0].method, 'DELETE');
+  assert.strictEqual(deletionCalls[0].options.priority, true);
 }
 
 async function httpTests(testDirectory) {
@@ -819,7 +954,7 @@ async function httpTests(testDirectory) {
   const github = new githubModule.FakeGitHubClient(config);
   const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
   await store.init();
-  await service.createAssignment({
+  const httpAssignment = await service.createAssignment({
     slug: 'hw0',
     title: 'Homework 0',
     template: 'cal-cs184-student/hw0-template',
@@ -888,6 +1023,23 @@ async function httpTests(testDirectory) {
     assert.strictEqual(response.status, 200);
     assert(response.body.indexOf('Add assignment') !== -1);
     assert(response.body.indexOf('Generate a public write-up repository') !== -1);
+    assert(response.body.indexOf('Archive assignment') !== -1);
+    assert(response.body.indexOf('Delete team and repositories') !== -1);
+    const staffCsrf = csrfFrom(response.body);
+
+    response = await httpRequest(server, jar, '/repo/admin/assignments/' + httpAssignment.id + '/archive', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf })
+    });
+    assert.strictEqual(response.status, 302);
+    response = await httpRequest(server, jar, '/repo/');
+    assert.strictEqual(response.body.indexOf('Homework 0'), -1,
+      'the archive route must hide the assignment from a signed-in student');
+    response = await httpRequest(server, jar, '/repo/admin/assignments/' + httpAssignment.id + '/unarchive', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf })
+    });
+    assert.strictEqual(response.status, 302);
 
     response = await httpRequest(server, jar, '/repo/health');
     assert.strictEqual(response.status, 200);
@@ -899,6 +1051,20 @@ async function httpTests(testDirectory) {
     response = await httpRequest(server, jar, '/repo/health');
     assert.strictEqual(response.status, 200, 'health checks must use constant-size readiness state');
     store.snapshot = originalSnapshot;
+
+    const httpWorkUnit = (await store.snapshot()).workUnits[0];
+    response = await httpRequest(server, jar, '/repo/admin/work-units/' + httpWorkUnit.id + '/delete', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf, confirm: 'wrong-name' })
+    });
+    assert.strictEqual(response.status, 400);
+    assert.strictEqual(Boolean(github.repositories[httpWorkUnit.repoName]), true);
+    response = await httpRequest(server, jar, '/repo/admin/work-units/' + httpWorkUnit.id + '/delete', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf, confirm: httpWorkUnit.repoName })
+    });
+    assert.strictEqual(response.status, 302);
+    assert.strictEqual(github.repositories[httpWorkUnit.repoName], undefined);
   } finally {
     await new Promise(function close(resolve) { server.close(resolve); });
   }
@@ -982,6 +1148,7 @@ async function run() {
   const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'repo184-test-'));
   try {
     await serviceTests(testDirectory);
+    await adminControlServiceTests(testDirectory);
     singleInstanceTests(testDirectory);
     attemptLimiterTests();
     githubActionLimiterTests();

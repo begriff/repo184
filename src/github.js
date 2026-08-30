@@ -658,6 +658,16 @@ class GitHubClient {
     );
     requireSuccess(response, 204, 'remove repository access');
   }
+
+  async deleteRepository(repoName) {
+    const response = await this.appRequest(
+      '/repos/' + encodeURIComponent(this.config.githubOrg) + '/' + encodeURIComponent(repoName),
+      'DELETE',
+      undefined,
+      { priority: true }
+    );
+    requireSuccess(response, [204, 404], 'delete the managed repository');
+  }
 }
 
 class FakeGitHubClient {
@@ -873,6 +883,13 @@ class FakeGitHubClient {
     }
     repository.collaborators = repository.collaborators || {};
     delete repository.collaborators[String(login).toLowerCase()];
+  }
+
+  async deleteRepository(repoName) {
+    if (!this.repositories[repoName]) {
+      return;
+    }
+    delete this.repositories[repoName];
   }
 }
 

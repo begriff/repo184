@@ -406,6 +406,7 @@ function assignmentForm(options, assignment) {
 function adminWorkUnit(options, workUnit) {
   const pending = joinRequests(options, workUnit, true, true);
   const active = !workUnit.lifecycle || workUnit.lifecycle === 'active';
+  const deleting = workUnit.lifecycle === 'deletion_pending';
   const rename = active && workUnit.kind === 'team'
     ? '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/rename" class="inline-controls">' +
       csrfField(options.csrf) + '<input name="teamName" value="' + escapeHtml(workUnit.displayName) + '" required minlength="2" maxlength="40" aria-label="Team name">' +
@@ -422,33 +423,61 @@ function adminWorkUnit(options, workUnit) {
     return '<li>@' + escapeHtml(item.user.login) + ' ' + statusLabel(item.accessStatus) + ' ' + retry + ' ' + remove +
       (item.accessError ? '<div class="field-error">' + escapeHtml(item.accessError) + '</div>' : '') + '</li>';
   }).join('') + '</ul>';
-  const release = workUnit.lifecycle !== 'released'
+  const release = deleting ? '' : (workUnit.lifecycle !== 'released'
     ? '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/release" class="release-form">' +
       csrfField(options.csrf) + '<label class="check-row"><input type="checkbox" name="confirm" value="release" required> Preserve the repositories, revoke direct student access, and let all members choose again.</label>' +
       '<button type="submit" class="button secondary small">' + (workUnit.lifecycle === 'release_pending' ? 'Finish releasing claim' : 'Release assignment claim') + '</button></form>'
-    : '<p class="muted">This claim was released. Its repositories are preserved for staff.</p>';
+    : '<p class="muted">This claim was released. Its repositories are preserved for staff.</p>');
+  const deletionProgress = deleting
+    ? '<p class="muted">Private code repository: ' + (workUnit.codeDeletedAt ? 'deleted' : 'not yet deleted') +
+      (workUnit.writeupEnabled ? ' · Public write-up repository: ' + (workUnit.writeupDeletedAt ? 'deleted' : 'not yet deleted') : '') + '</p>' +
+      (workUnit.deletionError ? '<div class="notice notice-error"><strong>Deletion needs a retry.</strong> ' + escapeHtml(workUnit.deletionError) + '</div>' : '')
+    : '<p>This permanently deletes the GitHub repositories and removes the team record. This cannot be undone.</p>';
+  const deletion = '<section class="danger-zone"><h4>Permanent deletion</h4>' + deletionProgress +
+    '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/delete" class="stack compact">' +
+    csrfField(options.csrf) + '<label>Type <code>' + escapeHtml(workUnit.repoName) + '</code> to confirm</label>' +
+    '<input name="confirm" required autocomplete="off" aria-label="Repository name confirmation">' +
+    '<button type="submit" class="button danger small">' + (deleting ? 'Finish permanent deletion' : 'Delete team and repositories') + '</button></form></section>';
   const writeupError = workUnit.writeupEnabled && (workUnit.writeupRepoError || workUnit.writeupPagesError);
   const writeupPending = workUnit.writeupEnabled &&
     (workUnit.writeupRepoStatus !== 'ready' || workUnit.writeupPagesStatus !== 'ready');
   const summaryStatus = workUnit.lifecycle && workUnit.lifecycle !== 'active'
     ? workUnit.lifecycle
     : (workUnit.repoError || writeupError ? 'verification_error' : (writeupPending ? 'provisioning' : workUnit.repoStatus));
-  return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' || pending ? ' open' : '') + '><summary>' +
+  return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' || deleting || pending ? ' open' : '') + '><summary>' +
     '<strong>' + escapeHtml(workUnit.assignment.slug) + ' · ' + escapeHtml(workUnit.displayName) + '</strong> ' + statusLabel(summaryStatus) +
     ' <span class="muted">' + escapeHtml(workUnit.repoName) + '</span></summary><div class="admin-unit-body">' + rename +
-    '<h4>Members</h4>' + members + (active ? pending : '') + repositoryPanel(options, workUnit, active, true) + release + '</div></details>';
+    '<h4>Members</h4>' + members + (active ? pending : '') + (deleting ? '' : repositoryPanel(options, workUnit, active, true)) + release + deletion + '</div></details>';
 }
 
 function adminPage(options) {
   const assignments = options.adminView.assignments.map(function assignment(item) {
-    return '<details class="admin-assignment"><summary><strong>' + escapeHtml(item.title) + '</strong> ' + statusLabel(item.status) +
+    const archiveAction = item.archived ? 'unarchive' : 'archive';
+    const archiveLabel = item.archived ? 'Unarchive assignment' : 'Archive assignment';
+    const retry = item.retryableCount
+      ? '<form method="post" action="' + options.basePath + '/admin/assignments/' + item.id + '/retry-failed">' + csrfField(options.csrf) +
+        '<button class="button secondary small" type="submit">Retry ' + escapeHtml(item.retryableCount) + ' failed/pending setup(s)</button></form>'
+      : '';
+    const deletion = item.workUnitCount === 0
+      ? '<section class="danger-zone"><h4>Delete empty assignment</h4><p>This removes only the assignment configuration. Type its slug to confirm.</p>' +
+        '<form method="post" action="' + options.basePath + '/admin/assignments/' + item.id + '/delete" class="stack compact">' + csrfField(options.csrf) +
+        '<label>Type <code>' + escapeHtml(item.slug) + '</code> to confirm</label><input name="confirm" required autocomplete="off">' +
+        '<button class="button danger small" type="submit">Delete assignment</button></form></section>'
+      : '<p class="form-note">Delete its ' + escapeHtml(item.workUnitCount) + ' team/repository record(s) before deleting this assignment.</p>';
+    return '<details class="admin-assignment"><summary><strong>' + escapeHtml(item.title) + '</strong> ' + statusLabel(item.archived ? 'archived' : item.status) +
       ' <code>' + escapeHtml(item.templateFullName) + '</code>' +
       (item.generateWriteupRepo ? ' + <code>' + escapeHtml(item.writeupTemplateFullName) + '</code>' : '') +
-      '</summary>' + assignmentForm(options, item) + '</details>';
+      '</summary>' + assignmentForm(options, item) + '<div class="admin-assignment-controls"><div class="button-row">' +
+      '<form method="post" action="' + options.basePath + '/admin/assignments/' + item.id + '/' + archiveAction + '">' + csrfField(options.csrf) +
+      '<button class="button secondary small" type="submit">' + archiveLabel + '</button></form>' + retry + '</div>' + deletion + '</div></details>';
   }).join('');
   const units = options.adminView.workUnits.map(function unit(item) { return adminWorkUnit(options, item); }).join('');
   const audit = options.adminView.audit.map(function event(item) {
-    return '<tr><td><time>' + escapeHtml(new Date(item.createdAt).toLocaleString('en-US')) + '</time></td><td>' + escapeHtml(item.actor) + '</td><td><code>' + escapeHtml(item.action) + '</code></td></tr>';
+    const details = item.details || {};
+    const detailValues = [details.assignmentSlug || details.slug, details.teamName, details.repoName, details.writeupRepoName].filter(function present(value, index, values) {
+      return value && values.indexOf(value) === index;
+    });
+    return '<tr><td><time>' + escapeHtml(new Date(item.createdAt).toLocaleString('en-US')) + '</time></td><td>' + escapeHtml(item.actor) + '</td><td><code>' + escapeHtml(item.action) + '</code></td><td>' + escapeHtml(detailValues.join(' · ')) + '</td></tr>';
   }).join('');
   return page(Object.assign({}, options, {
     title: 'Administration',
@@ -458,8 +487,8 @@ function adminPage(options) {
       '<section class="panel"><h2>Add assignment</h2>' + assignmentForm(options, null) + '</section>' +
       '<section class="admin-section"><h2>Assignments</h2>' + (assignments || '<p class="muted">No assignments configured.</p>') + '</section>' +
       '<section class="admin-section"><h2>Teams and repositories</h2>' + (units || '<p class="muted">No repositories created.</p>') + '</section>' +
-      '<section class="admin-section"><h2>Recent activity</h2><div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th></tr></thead><tbody>' +
-      (audit || '<tr><td colspan="3">No activity yet.</td></tr>') + '</tbody></table></div></section>'
+      '<section class="admin-section"><h2>Recent activity</h2><div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>' +
+      (audit || '<tr><td colspan="4">No activity yet.</td></tr>') + '</tbody></table></div></section>'
   }));
 }
 

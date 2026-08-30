@@ -34,7 +34,26 @@ function isActiveWorkUnit(workUnit) {
 }
 
 function claimsAssignment(workUnit) {
-  return workUnit.lifecycle !== 'released';
+  if (!workUnit.lifecycle || workUnit.lifecycle === 'active' || workUnit.lifecycle === 'release_pending') {
+    return true;
+  }
+  return workUnit.lifecycle === 'deletion_pending' && workUnit.deletionClaimsAssignment;
+}
+
+function needsProvisioningRetry(workUnit) {
+  if (!isActiveWorkUnit(workUnit)) {
+    return false;
+  }
+  if (workUnit.repoStatus !== 'ready' || Boolean(workUnit.repoError)) {
+    return true;
+  }
+  if (workUnit.writeupEnabled && (workUnit.writeupRepoStatus !== 'ready' || workUnit.writeupPagesStatus !== 'ready' ||
+      Boolean(workUnit.writeupRepoError) || Boolean(workUnit.writeupPagesError))) {
+    return true;
+  }
+  return workUnit.members.some(function memberNeedsRetry(member) {
+    return !member.removalPending && member.accessStatus !== 'ready';
+  });
 }
 
 function addAudit(state, actor, action, details) {
@@ -390,6 +409,7 @@ class Repo184Service {
       const now = util.nowIso();
       const assignment = Object.assign({
         id: util.randomId('assignment'),
+        archived: false,
         createdAt: now,
         updatedAt: now
       }, assignmentInput);
@@ -478,6 +498,50 @@ class Repo184Service {
     });
   }
 
+  async setAssignmentArchived(assignmentId, archived, actor) {
+    return this.store.transaction(function updateArchiveState(state) {
+      const assignment = findAssignment(state, assignmentId);
+      if (!assignment) {
+        throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
+      }
+      assignment.archived = Boolean(archived);
+      assignment.updatedAt = util.nowIso();
+      addAudit(state, actor, assignment.archived ? 'assignment.archived' : 'assignment.unarchived', {
+        assignmentId: assignment.id,
+        slug: assignment.slug
+      });
+      return util.clone(assignment);
+    });
+  }
+
+  async deleteEmptyAssignment(assignmentId, confirmation, actor) {
+    return this.store.transaction(function deleteAssignment(state) {
+      const assignment = findAssignment(state, assignmentId);
+      if (!assignment) {
+        throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
+      }
+      if (String(confirmation || '') !== assignment.slug) {
+        throw new util.AppError('Type the exact assignment slug to confirm deletion.', 400, 'assignment_deletion_not_confirmed');
+      }
+      if (state.workUnits.some(function referencesAssignment(workUnit) {
+        return workUnit.assignmentId === assignment.id;
+      })) {
+        throw new util.AppError('This assignment still has team or repository records. Delete those records individually before deleting the assignment.', 409, 'assignment_not_empty');
+      }
+      state.assignments = state.assignments.filter(function keep(item) {
+        return item.id !== assignment.id;
+      });
+      addAudit(state, actor, 'assignment.deleted', {
+        assignmentId: assignment.id,
+        slug: assignment.slug,
+        title: assignment.title,
+        template: assignment.templateFullName,
+        writeupTemplate: assignment.writeupTemplateFullName || ''
+      });
+      return util.clone(assignment);
+    });
+  }
+
   async createWorkUnit(assignmentSlug, userId, teamName) {
     await this.ensureActiveMembership(userId);
     const service = this;
@@ -485,6 +549,9 @@ class Repo184Service {
       const user = service.requireActiveUser(state, userId);
       const assignment = findAssignment(state, assignmentSlug);
       if (!assignment) {
+        throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
+      }
+      if (assignment.archived) {
         throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
       }
       const existing = state.workUnits.find(function membership(workUnit) {
@@ -573,6 +640,10 @@ class Repo184Service {
         writeupPagesUrl: '',
         writeupPagesStatus: assignment.generateWriteupRepo ? 'pending' : 'disabled',
         writeupPagesError: '',
+        deletionError: '',
+        codeDeletedAt: '',
+        writeupDeletedAt: '',
+        deletionClaimsAssignment: false,
         members: [{
           userId: userId,
           role: 'owner',
@@ -1022,7 +1093,7 @@ class Repo184Service {
       const user = service.requireActiveUser(state, userId);
       const assignment = findAssignment(state, assignmentSlug);
       const workUnit = findWorkUnit(state, workUnitId);
-      if (!assignment || !workUnit || !isActiveWorkUnit(workUnit) || workUnit.assignmentId !== assignment.id) {
+      if (!assignment || assignment.archived || !workUnit || !isActiveWorkUnit(workUnit) || workUnit.assignmentId !== assignment.id) {
         throw new util.AppError('Team not found.', 404, 'team_not_found');
       }
       if (assignment.status !== 'open') {
@@ -1129,7 +1200,7 @@ class Repo184Service {
       if (!isAdmin && !actorIsMember) {
         throw new util.AppError('Only a current team member can resolve this request.', 403, 'not_team_member');
       }
-      if (!isAdmin && assignment.status !== 'open') {
+      if (!isAdmin && (assignment.archived || assignment.status !== 'open')) {
         throw new util.AppError('This assignment is closed.', 409, 'assignment_closed');
       }
       const actor = isAdmin ? 'admin' : (state.users[actorId] ? state.users[actorId].login : actorId);
@@ -1402,6 +1473,9 @@ class Repo184Service {
       if (workUnit.lifecycle === 'released') {
         return { alreadyReleased: true, workUnit: enrichWorkUnit(state, workUnit), members: [] };
       }
+      if (workUnit.lifecycle === 'deletion_pending') {
+        throw new util.AppError('This team is pending permanent deletion. Finish that deletion from the staff console.', 409, 'work_unit_deletion_pending');
+      }
       if (workUnit.lifecycle !== 'release_pending') {
         workUnit.lifecycle = 'release_pending';
         workUnit.releaseError = '';
@@ -1563,10 +1637,199 @@ class Repo184Service {
     });
   }
 
+  deleteWorkUnit(workUnitId, confirmation, actor) {
+    const service = this;
+    return this.withWorkUnitLock(workUnitId, function deleteLocked() {
+      return service.performDeleteWorkUnit(workUnitId, confirmation, actor);
+    });
+  }
+
+  async deleteManagedRepositoryForWorkUnit(workUnit, writeup) {
+    const repoName = writeup ? workUnit.writeupRepoName : workUnit.repoName;
+    const repoId = writeup ? workUnit.writeupRepoId : workUnit.repoId;
+    const marker = writeup ? workUnit.writeupRepoMarker : workUnit.repoMarker;
+    const repository = await this.github.getRepository(repoName, true);
+    if (!repository) {
+      return;
+    }
+    if (repoId !== null && repoId !== undefined && String(repository.id) !== String(repoId)) {
+      throw new util.AppError(
+        'A different GitHub repository now uses ' + repoName + '. Repo184 did not delete it.',
+        409,
+        writeup ? 'writeup_repository_identity_mismatch' : 'repository_identity_mismatch'
+      );
+    }
+    if ((repoId === null || repoId === undefined) &&
+        (repository.description !== marker || (writeup ? repository.private : !repository.private))) {
+      throw new util.AppError(
+        repoName + ' cannot be proven to belong to this Repo184 record. Repo184 did not delete it.',
+        409,
+        writeup ? 'writeup_repository_collision' : 'repository_collision'
+      );
+    }
+    await this.github.deleteRepository(repoName);
+  }
+
+  async performDeleteWorkUnit(workUnitId, confirmation, actor) {
+    const reservation = await this.store.transaction(function reserveDeletion(state) {
+      const workUnit = findWorkUnit(state, workUnitId);
+      if (!workUnit) {
+        throw new util.AppError('Repository record not found.', 404, 'work_unit_not_found');
+      }
+      if (String(confirmation || '') !== workUnit.repoName) {
+        throw new util.AppError('Type the exact private repository name to confirm permanent deletion.', 400, 'repository_deletion_not_confirmed');
+      }
+      if (workUnit.lifecycle !== 'deletion_pending') {
+        const heldClaim = claimsAssignment(workUnit);
+        workUnit.lifecycle = 'deletion_pending';
+        workUnit.deletionClaimsAssignment = heldClaim;
+        workUnit.deletionError = '';
+        workUnit.codeDeletedAt = workUnit.codeDeletedAt || '';
+        workUnit.writeupDeletedAt = workUnit.writeupDeletedAt || '';
+        workUnit.updatedAt = util.nowIso();
+        addAudit(state, actor, 'work_unit.deletion_started', {
+          workUnitId: workUnit.id,
+          assignmentId: workUnit.assignmentId,
+          repoName: workUnit.repoName,
+          repoId: workUnit.repoId,
+          writeupRepoName: workUnit.writeupRepoName || '',
+          writeupRepoId: workUnit.writeupRepoId
+        });
+      }
+      return util.clone(workUnit);
+    });
+
+    const service = this;
+    async function deletePart(writeup) {
+      const deletedField = writeup ? 'writeupDeletedAt' : 'codeDeletedAt';
+      if ((writeup && !reservation.writeupEnabled) || reservation[deletedField]) {
+        return;
+      }
+      await service.deleteManagedRepositoryForWorkUnit(reservation, writeup);
+      await service.store.transaction(function recordRepositoryDeletion(state) {
+        const workUnit = findWorkUnit(state, workUnitId);
+        if (!workUnit || workUnit[deletedField]) {
+          return;
+        }
+        workUnit[deletedField] = util.nowIso();
+        workUnit.deletionError = '';
+        workUnit.updatedAt = util.nowIso();
+        addAudit(state, actor, writeup ? 'writeup_repository.deleted' : 'repository.deleted', {
+          workUnitId: workUnit.id,
+          repoName: writeup ? workUnit.writeupRepoName : workUnit.repoName,
+          repoId: writeup ? workUnit.writeupRepoId : workUnit.repoId
+        });
+      });
+    }
+
+    try {
+      await deletePart(true);
+      await deletePart(false);
+    } catch (error) {
+      await this.store.transaction(function recordDeletionError(state) {
+        const workUnit = findWorkUnit(state, workUnitId);
+        if (!workUnit) {
+          return;
+        }
+        workUnit.deletionError = cleanError(error);
+        workUnit.updatedAt = util.nowIso();
+        addAudit(state, actor, 'work_unit.deletion_error', {
+          workUnitId: workUnit.id,
+          repoName: workUnit.repoName,
+          error: workUnit.deletionError
+        });
+      });
+      throw new util.AppError('Permanent deletion is incomplete. Repo184 kept the record so staff can safely finish it: ' + cleanError(error), 502, 'work_unit_deletion_failed');
+    }
+
+    return this.store.transaction(function finalizeDeletion(state) {
+      const workUnit = findWorkUnit(state, workUnitId);
+      if (!workUnit) {
+        throw new util.AppError('Repository record not found.', 404, 'work_unit_not_found');
+      }
+      if (!workUnit.codeDeletedAt || (workUnit.writeupEnabled && !workUnit.writeupDeletedAt)) {
+        throw new util.AppError('Repository deletion is not complete.', 409, 'work_unit_deletion_incomplete');
+      }
+      const assignment = findAssignment(state, workUnit.assignmentId);
+      const deleted = {
+        workUnitId: workUnit.id,
+        assignmentId: workUnit.assignmentId,
+        assignmentSlug: assignment ? assignment.slug : '',
+        teamName: workUnit.displayName,
+        repoName: workUnit.repoName,
+        repoId: workUnit.repoId,
+        writeupRepoName: workUnit.writeupRepoName || '',
+        writeupRepoId: workUnit.writeupRepoId,
+        memberLogins: workUnit.members.map(function login(member) {
+          return state.users[member.userId] ? state.users[member.userId].login : member.userId;
+        }),
+        createdAt: workUnit.createdAt,
+        deletedAt: util.nowIso()
+      };
+      state.workUnits = state.workUnits.filter(function keep(item) {
+        return item.id !== workUnit.id;
+      });
+      addAudit(state, actor, 'work_unit.deleted', deleted);
+      return util.clone(deleted);
+    });
+  }
+
+  async retryAssignmentWorkUnits(assignmentId, actor) {
+    const before = await this.store.snapshot();
+    const assignment = findAssignment(before, assignmentId);
+    if (!assignment) {
+      throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
+    }
+    const workUnitIds = before.workUnits.filter(function failedForAssignment(workUnit) {
+      return workUnit.assignmentId === assignment.id && needsProvisioningRetry(workUnit);
+    }).map(function id(workUnit) {
+      return workUnit.id;
+    });
+    let ready = 0;
+    let stillNeedsAttention = 0;
+    for (let index = 0; index < workUnitIds.length; index += 1) {
+      try {
+        const result = await this.provisionWorkUnit(workUnitIds[index]);
+        if (result && !needsProvisioningRetry(result)) {
+          ready += 1;
+        } else {
+          stillNeedsAttention += 1;
+        }
+      } catch (error) {
+        stillNeedsAttention += 1;
+      }
+    }
+    await this.store.transaction(function recordBulkRetry(state) {
+      addAudit(state, actor, 'assignment.failed_setups_retried', {
+        assignmentId: assignment.id,
+        slug: assignment.slug,
+        attempted: workUnitIds.length,
+        ready: ready,
+        stillNeedsAttention: stillNeedsAttention
+      });
+    });
+    return {
+      attempted: workUnitIds.length,
+      ready: ready,
+      stillNeedsAttention: stillNeedsAttention
+    };
+  }
+
   async getWorkUnit(workUnitId) {
     const state = await this.store.snapshot();
     const workUnit = findWorkUnit(state, workUnitId);
     return workUnit ? enrichWorkUnit(state, workUnit) : null;
+  }
+
+  async getStudentWorkUnit(workUnitId, userId) {
+    const state = await this.store.snapshot();
+    const workUnit = findWorkUnit(state, workUnitId);
+    const assignment = workUnit ? findAssignment(state, workUnit.assignmentId) : null;
+    if (!workUnit || !assignment || assignment.archived || !isActiveWorkUnit(workUnit) ||
+        !workUnit.members.some(function member(item) { return item.userId === userId; })) {
+      return null;
+    }
+    return enrichWorkUnit(state, workUnit);
   }
 
   async getDashboard(userId) {
@@ -1575,7 +1838,9 @@ class Repo184Service {
     if (!user) {
       throw new util.AppError('Please sign in again.', 401, 'login_required');
     }
-    const assignments = state.assignments.slice().sort(function byCreated(left, right) {
+    const assignments = state.assignments.filter(function visible(assignment) {
+      return !assignment.archived;
+    }).sort(function byCreated(left, right) {
       return left.createdAt.localeCompare(right.createdAt);
     }).map(function summarize(assignment) {
       const own = state.workUnits.find(function membership(workUnit) {
@@ -1613,7 +1878,7 @@ class Repo184Service {
   async getAssignmentView(assignmentSlug, userId) {
     const state = await this.store.snapshot();
     const assignment = findAssignment(state, assignmentSlug);
-    if (!assignment) {
+    if (!assignment || assignment.archived) {
       throw new util.AppError('Assignment not found.', 404, 'assignment_not_found');
     }
     const own = state.workUnits.find(function membership(workUnit) {
@@ -1652,7 +1917,7 @@ class Repo184Service {
     const state = await this.store.snapshot();
     const assignment = findAssignment(state, assignmentSlug);
     const workUnit = findWorkUnit(state, workUnitId);
-    if (!assignment || !workUnit || !isActiveWorkUnit(workUnit) || workUnit.assignmentId !== assignment.id || workUnit.kind !== 'team') {
+    if (!assignment || assignment.archived || !workUnit || !isActiveWorkUnit(workUnit) || workUnit.assignmentId !== assignment.id || workUnit.kind !== 'team') {
       throw new util.AppError('Team not found.', 404, 'team_not_found');
     }
     const enriched = enrichWorkUnit(state, workUnit);
@@ -1709,6 +1974,12 @@ class Repo184Service {
           return workUnit.assignmentId === assignment.id &&
             (claimsAssignment(workUnit) || workUnit.repoId !== null);
         });
+        result.workUnitCount = state.workUnits.filter(function forAssignment(workUnit) {
+          return workUnit.assignmentId === assignment.id;
+        }).length;
+        result.retryableCount = state.workUnits.filter(function retryableForAssignment(workUnit) {
+          return workUnit.assignmentId === assignment.id && needsProvisioningRetry(workUnit);
+        }).length;
         return result;
       }),
       workUnits: state.workUnits.slice().sort(function sort(left, right) {

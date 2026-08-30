@@ -9,8 +9,9 @@ part of GitHub Classroom for CS 184/284A:
 - students can request to join an assignment-specific team, and an existing
   member approves the request;
 - staff configure assignments, repair access, remove a mistaken partner, or
-  release an assignment claim from `/repo/admin`. Releasing preserves the
-  private repository for staff while revoking direct student access.
+  release or permanently delete a team from `/repo/admin`. Releasing preserves
+  its repositories for staff while revoking direct student access; permanent
+  deletion removes the managed GitHub repositories and the Repo184 team record.
 
 Repo184 does not replace Gradescope. Students still submit the required commit
 or repository information to Gradescope, and public writeups remain separate
@@ -357,6 +358,32 @@ Keep the GitHub callback URL and `BASE_URL` exactly aligned with the public HTTP
 URL.
 
 ## Operations and backups
+
+### Staff console safety controls
+
+The staff console supports these distinct operations:
+
+- **Archive assignment** hides it from student lists and student-facing direct
+  URLs without changing teams, repositories, or its open/closed setting.
+- **Retry failed/pending setups** retries every active team in that assignment
+  whose repository, Pages site, or member access is not ready.
+- **Release assignment claim** preserves the repositories, revokes direct
+  student access, and allows those students to choose another team.
+- **Delete team and repositories** permanently deletes the managed private code
+  repository and optional public write-up repository, then removes the team
+  record. Staff must type the exact private repository name. If one GitHub
+  deletion succeeds and another fails, Repo184 keeps a `deletion_pending`
+  record and a **Finish permanent deletion** action. It verifies a saved
+  immutable repository ID, or the Repo184 marker when no ID was saved, before
+  every deletion and will not delete a repository that fails that check.
+- **Delete empty assignment** removes configuration only after all of its team
+  records are gone. Staff must type the exact assignment slug.
+
+Permanent deletion cannot be undone by restoring Repo184's JSON data file.
+GitHub repository deletion is external and remains deleted; use the release
+operation when the goal is only to let students choose again. The existing
+Provisioning App's Repository Administration write permission covers deletion,
+so this feature requires no additional GitHub App permission.
 
 ### Routine operations
 

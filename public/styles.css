@@ -107,6 +107,8 @@ code {
 .button:hover { color: #fff; background: #0b4f82; }
 .button.secondary { color: #003262; background: #fff; }
 .button.secondary:hover { color: #003262; background: #f3f5f7; }
+.button.danger { border-color: #9b1c1c; color: #fff; background: #9b1c1c; }
+.button.danger:hover { color: #fff; background: #7d1616; }
 .button.small { padding: 6px 10px; font-size: 14px; }
 .github-button span { margin-right: 6px; font-size: 12px; }
 
@@ -165,9 +167,10 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 }
 .status-open, .status-ready { border-color: #83af94; color: #216b40; background: #f1f8f3; }
 .status-error, .status-access_error, .status-verification_error { border-color: #ce9696; color: #9b1c1c; background: #fff4f4; }
+.status-archived { border-color: #9da8b3; color: #4f5964; background: #f3f5f7; }
 .status-pending, .status-provisioning, .status-invitation_pending,
 .status-granting, .status-access_pending, .status-access_granting,
-.status-access_invitation_pending {
+.status-access_invitation_pending, .status-deletion_pending {
   border-color: #c9aa55;
   color: #614a0d;
   background: #fff9e5;
@@ -223,7 +226,10 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 .admin-assignment > summary, .admin-unit > summary { padding: 12px 14px; }
 .admin-assignment[open] > summary, .admin-unit[open] > summary { border-bottom: 1px solid #ccd3da; background: #f3f5f7; }
 .admin-assignment .admin-form, .admin-unit-body { padding: 16px; }
+.admin-assignment-controls { border-top: 1px solid #ccd3da; padding: 16px; }
 .inline-controls input { max-width: 320px; }
+.danger-zone { margin-top: 18px; border-top: 1px solid #ce9696; padding-top: 12px; }
+.danger-zone h4, .danger-zone label { color: #7d1616; }
 
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

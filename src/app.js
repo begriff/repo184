@@ -505,8 +505,8 @@ function createRouter(overrides) {
   }));
 
   router.post('/work-units/:workUnitId/retry', requireCsrf, requireUser, requireGithubActionAllowance, asyncRoute(async function retryWorkUnit(req, res) {
-    const workUnit = await service.getWorkUnit(req.params.workUnitId);
-    if (!workUnit || !workUnit.members.some(function member(item) { return item.userId === req.currentUser.id; })) {
+    const workUnit = await service.getStudentWorkUnit(req.params.workUnitId, req.currentUser.id);
+    if (!workUnit) {
       throw new util.AppError('Repository not found.', 404, 'work_unit_not_found');
     }
     const result = await service.provisionWorkUnit(workUnit.id);
@@ -563,6 +563,33 @@ function createRouter(overrides) {
     return res.redirect(config.basePath + '/admin');
   }));
 
+  router.post('/admin/assignments/:assignmentId/archive', requireCsrf, requireAdmin, asyncRoute(async function archiveAssignment(req, res) {
+    await service.setAssignmentArchived(req.params.assignmentId, true, 'admin');
+    setFlash(req, 'success', 'Assignment archived and hidden from students. Team and repository records were preserved.');
+    return res.redirect(config.basePath + '/admin');
+  }));
+
+  router.post('/admin/assignments/:assignmentId/unarchive', requireCsrf, requireAdmin, asyncRoute(async function unarchiveAssignment(req, res) {
+    await service.setAssignmentArchived(req.params.assignmentId, false, 'admin');
+    setFlash(req, 'success', 'Assignment restored to the student assignment list.');
+    return res.redirect(config.basePath + '/admin');
+  }));
+
+  router.post('/admin/assignments/:assignmentId/delete', requireCsrf, requireAdmin, asyncRoute(async function deleteAssignment(req, res) {
+    const deleted = await service.deleteEmptyAssignment(req.params.assignmentId, req.body.confirm, 'admin');
+    setFlash(req, 'success', 'Deleted empty assignment ' + deleted.slug + '.');
+    return res.redirect(config.basePath + '/admin');
+  }));
+
+  router.post('/admin/assignments/:assignmentId/retry-failed', requireCsrf, requireAdmin, requireGithubActionAllowance, asyncRoute(async function retryFailedAssignmentSetups(req, res) {
+    const result = await service.retryAssignmentWorkUnits(req.params.assignmentId, 'admin');
+    const message = result.attempted === 0
+      ? 'No failed or pending setups needed a retry.'
+      : 'Retried ' + result.attempted + ' setup(s): ' + result.ready + ' ready, ' + result.stillNeedsAttention + ' still need attention.';
+    setFlash(req, result.stillNeedsAttention ? 'error' : 'success', message);
+    return res.redirect(config.basePath + '/admin');
+  }));
+
   router.post('/admin/work-units/:workUnitId/retry', requireCsrf, requireAdmin, requireGithubActionAllowance, asyncRoute(async function adminRetry(req, res) {
     const result = await service.provisionWorkUnit(req.params.workUnitId);
     setFlash(req, allAccessReady(result) ? 'success' : 'error',
@@ -592,6 +619,13 @@ function createRouter(overrides) {
     setFlash(req, result.repoError ? 'error' : 'success', result.repoError
       ? 'Assignment claim released and direct access revoked, but the repository needs immediate GitHub attention: ' + result.repoError
       : 'Assignment claim released. The private repository was preserved, its direct student access was revoked, and the students may choose again.');
+    return res.redirect(config.basePath + '/admin');
+  }));
+
+  router.post('/admin/work-units/:workUnitId/delete', requireCsrf, requireAdmin, requireGithubActionAllowance, asyncRoute(async function adminDeleteWorkUnit(req, res) {
+    const deleted = await service.deleteWorkUnit(req.params.workUnitId, req.body.confirm, 'admin');
+    setFlash(req, 'success', 'Permanently deleted ' + deleted.repoName +
+      (deleted.writeupRepoName ? ' and ' + deleted.writeupRepoName : '') + ', then removed the team record.');
     return res.redirect(config.basePath + '/admin');
   }));
 

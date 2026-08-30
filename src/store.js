@@ -82,6 +82,33 @@ function migrateWriteupRepositories(state) {
   return changed;
 }
 
+function migrateAdminControls(state) {
+  if (!state || !Array.isArray(state.assignments) || !Array.isArray(state.workUnits)) {
+    return false;
+  }
+  let changed = false;
+  state.assignments.forEach(function migrateAssignment(assignment) {
+    if (assignment.archived === undefined) {
+      assignment.archived = false;
+      changed = true;
+    }
+  });
+  state.workUnits.forEach(function migrateWorkUnit(workUnit) {
+    [
+      ['deletionError', ''],
+      ['codeDeletedAt', ''],
+      ['writeupDeletedAt', ''],
+      ['deletionClaimsAssignment', false]
+    ].forEach(function addDeletionField(entry) {
+      if (workUnit[entry[0]] === undefined) {
+        workUnit[entry[0]] = entry[1];
+        changed = true;
+      }
+    });
+  });
+  return changed;
+}
+
 function validateState(state) {
   if (!state || state.version !== 1 || !Array.isArray(state.assignments) ||
       !state.users || !Array.isArray(state.workUnits) || !Array.isArray(state.audit)) {
@@ -91,6 +118,9 @@ function validateState(state) {
   const assignmentSlugs = {};
   const repoPrefixes = {};
   state.assignments.forEach(function eachAssignment(assignment) {
+    if (typeof assignment.archived !== 'boolean') {
+      throw new Error('Assignment has an invalid archive state');
+    }
     if (assignment.templateRepoId === undefined || assignment.templateRepoId === null) {
       throw new Error('Assignment is missing its immutable template repository ID');
     }
@@ -111,8 +141,11 @@ function validateState(state) {
   const repoNames = {};
   const requestIds = {};
   state.workUnits.forEach(function eachWorkUnit(workUnit) {
-    if (workUnit.lifecycle && ['active', 'release_pending', 'released'].indexOf(workUnit.lifecycle) === -1) {
+    if (workUnit.lifecycle && ['active', 'release_pending', 'released', 'deletion_pending'].indexOf(workUnit.lifecycle) === -1) {
       throw new Error('Work unit has an unsupported lifecycle state');
+    }
+    if (workUnit.lifecycle === 'deletion_pending' && typeof workUnit.deletionClaimsAssignment !== 'boolean') {
+      throw new Error('Work unit deletion is missing its assignment-claim state');
     }
     if (['not_generated', 'verified', 'mismatch', 'identity_mismatch'].indexOf(workUnit.templateProvenance) === -1) {
       throw new Error('Work unit has an unsupported template provenance state');
@@ -155,7 +188,9 @@ function validateState(state) {
       throw new Error('Work unit exceeds its assignment team-size rule');
     }
 
-    const claimsAssignment = workUnit.lifecycle !== 'released';
+    const claimsAssignment = !workUnit.lifecycle || workUnit.lifecycle === 'active' ||
+      workUnit.lifecycle === 'release_pending' ||
+      (workUnit.lifecycle === 'deletion_pending' && workUnit.deletionClaimsAssignment);
     const membersInUnit = {};
     workUnit.members.forEach(function eachMember(member) {
       const claim = workUnit.assignmentId + ':' + member.userId;
@@ -231,7 +266,8 @@ class JsonStore {
       this.state = JSON.parse(contents);
       const migratedIndividuals = migrateIndividualWorkUnits(this.state);
       const migratedWriteups = migrateWriteupRepositories(this.state);
-      const migrated = migratedIndividuals || migratedWriteups;
+      const migratedAdminControls = migrateAdminControls(this.state);
+      const migrated = migratedIndividuals || migratedWriteups || migratedAdminControls;
       validateState(this.state);
       if (migrated) {
         await this.writeState(this.state);

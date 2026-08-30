@@ -437,6 +437,46 @@ async function serviceTests(testDirectory) {
     'release retry must skip members whose revocation was already confirmed');
   github.getUserById = originalGetUserById;
 
+  const gina = await addUser(service, github, 'gina-184', 'active');
+  const metadataGenerateRepository = github.generateRepository.bind(github);
+  const metadataGenerateWriteupRepository = github.generateWriteupRepository.bind(github);
+  github.generateRepository = async function reportDifferentTemplate(assignmentValue, repoName, marker) {
+    const repository = await metadataGenerateRepository(assignmentValue, repoName, marker);
+    repository.template_repository = { id: assignmentValue.templateRepoId + 1000 };
+    return repository;
+  };
+  github.generateWriteupRepository = async function omitTemplateMetadata(assignmentValue, repoName, marker) {
+    const repository = await metadataGenerateWriteupRepository(assignmentValue, repoName, marker);
+    delete repository.template_repository;
+    return repository;
+  };
+  const metadataTeam = await service.createWorkUnit('hw1', gina.id, 'Metadata Test');
+  assert.strictEqual(metadataTeam.repoStatus, 'ready',
+    'unexpected response metadata must not override the verified template endpoint');
+  assert.strictEqual(metadataTeam.writeupRepoStatus, 'ready');
+  assert.strictEqual(metadataTeam.templateSourceRepoId, assignment.templateRepoId);
+  assert.strictEqual(metadataTeam.templateReportedRepoId, assignment.templateRepoId + 1000);
+  assert.strictEqual(metadataTeam.writeupTemplateSourceRepoId, assignment.writeupTemplateRepoId);
+  assert.strictEqual(metadataTeam.writeupTemplateReportedRepoId, null);
+  github.generateRepository = metadataGenerateRepository;
+  github.generateWriteupRepository = metadataGenerateWriteupRepository;
+
+  await store.transaction(function simulateOldFalseMismatch(state) {
+    const unit = state.workUnits.find(function match(item) { return item.id === metadataTeam.id; });
+    unit.templateProvenance = 'mismatch';
+    unit.repoStatus = 'error';
+    unit.repoError = 'GitHub reported that this repository was generated from a different template.';
+    unit.writeupTemplateProvenance = 'mismatch';
+    unit.writeupRepoStatus = 'error';
+    unit.writeupRepoError = 'GitHub reported that this write-up repository was generated from a different template.';
+  });
+  const recoveredMetadataTeam = await service.provisionWorkUnit(metadataTeam.id);
+  assert.strictEqual(recoveredMetadataTeam.templateProvenance, 'verified',
+    'a repository ID recorded by the old response-metadata check must recover on retry');
+  assert.strictEqual(recoveredMetadataTeam.writeupTemplateProvenance, 'verified');
+  assert.strictEqual(recoveredMetadataTeam.repoError, '');
+  assert.strictEqual(recoveredMetadataTeam.writeupRepoError, '');
+
   const erin = await addUser(service, github, 'erin-184', 'active');
   const templateKey = 'cal-cs184-student/hw1-template';
   const originalTemplate = Object.assign({}, github.templates[templateKey]);
@@ -451,22 +491,20 @@ async function serviceTests(testDirectory) {
   const frank = await addUser(service, github, 'frank-184', 'active');
   const originalGenerateRepository = github.generateRepository.bind(github);
   github.generateRepository = async function swapTemplateDuringGeneration(assignmentValue, repoName, marker) {
-    const trustedTemplate = Object.assign({}, github.templates[templateKey]);
     github.replaceFakeTemplate('cal-cs184-student', 'hw1-template');
-    const repository = await originalGenerateRepository(assignmentValue, repoName, marker);
-    github.templates[templateKey] = trustedTemplate;
-    return repository;
+    return originalGenerateRepository(assignmentValue, repoName, marker);
   };
   const provenanceBlocked = await service.createWorkUnit('hw1', frank.id, 'Frank Solo');
   assert.strictEqual(provenanceBlocked.repoStatus, 'error');
-  assert.strictEqual(provenanceBlocked.templateProvenance, 'mismatch');
+  assert.strictEqual(provenanceBlocked.templateProvenance, 'identity_mismatch');
   assert.notStrictEqual(provenanceBlocked.repoId, null,
     'an untrusted generated repository must retain its immutable ID for staff cleanup');
   assert.strictEqual(Boolean(github.repositories[provenanceBlocked.repoName].collaborators), false,
     'template provenance failure must happen before any student collaborator is granted');
   github.generateRepository = originalGenerateRepository;
+  github.templates[templateKey] = originalTemplate;
   const provenanceRetry = await service.provisionWorkUnit(provenanceBlocked.id);
-  assert.strictEqual(provenanceRetry.templateProvenance, 'mismatch',
+  assert.strictEqual(provenanceRetry.templateProvenance, 'identity_mismatch',
     'a terminal template provenance failure must not be adopted on retry');
 
   const staleTemporary = config.dataFile + '.999999.1.tmp';
@@ -475,7 +513,7 @@ async function serviceTests(testDirectory) {
   const snapshot = await reloaded.snapshot();
   assert.strictEqual(fs.existsSync(staleTemporary), false, 'startup must remove stale atomic-write files');
   assert.strictEqual(snapshot.assignments.length, 2);
-  assert.strictEqual(snapshot.workUnits.length, 7);
+  assert.strictEqual(snapshot.workUnits.length, 8);
 
   const legacyState = util.clone(snapshot);
   legacyState.assignments.forEach(function removeWriteupAssignmentFields(item) {
@@ -486,6 +524,7 @@ async function serviceTests(testDirectory) {
     delete item.writeupTemplateRepoId;
   });
   legacyState.workUnits.forEach(function removeWriteupWorkUnitFields(item) {
+    delete item.templateReportedRepoId;
     Object.keys(item).filter(function writeupField(key) {
       return key.indexOf('writeup') === 0;
     }).forEach(function remove(key) {

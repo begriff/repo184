@@ -553,6 +553,7 @@ class Repo184Service {
         repoSshUrl: '',
         templateProvenance: 'not_generated',
         templateSourceRepoId: null,
+        templateReportedRepoId: null,
         repoStatus: 'provisioning',
         repoError: '',
         writeupEnabled: Boolean(assignment.generateWriteupRepo),
@@ -566,6 +567,7 @@ class Repo184Service {
         writeupRepoSshUrl: '',
         writeupTemplateProvenance: assignment.generateWriteupRepo ? 'not_generated' : 'disabled',
         writeupTemplateSourceRepoId: null,
+        writeupTemplateReportedRepoId: null,
         writeupRepoStatus: assignment.generateWriteupRepo ? 'provisioning' : 'disabled',
         writeupRepoError: '',
         writeupPagesUrl: '',
@@ -626,8 +628,9 @@ class Repo184Service {
     }
     const assignment = findAssignment(state, workUnit.assignmentId);
     try {
-      if (workUnit.templateProvenance === 'mismatch') {
-        throw new util.AppError('GitHub reported that this repository was generated from a different template. Staff must release this claim and inspect the repository.', 409, 'template_provenance_mismatch');
+      if (workUnit.templateProvenance === 'identity_mismatch' ||
+          (workUnit.templateProvenance === 'mismatch' && workUnit.repoId === null)) {
+        throw new util.AppError('The assignment template identity changed while this repository was being generated. Staff must release this claim and inspect the repository.', 409, 'template_provenance_mismatch');
       }
       let repository = await this.github.getRepository(workUnit.repoName);
       if (repository) {
@@ -637,7 +640,8 @@ class Repo184Service {
         if (!repository.private || repository.description !== workUnit.repoMarker) {
           throw new util.AppError('A repository with this name already exists and was not created by this Repo184 record. Staff must resolve the collision.', 409, 'repository_collision');
         }
-        if (workUnit.repoId === null || workUnit.templateProvenance !== 'verified') {
+        await this.verifyAssignmentTemplate(assignment);
+        if (workUnit.repoId === null) {
           const existingSourceId = repository.template_repository && repository.template_repository.id;
           if (existingSourceId === undefined || existingSourceId === null ||
               String(existingSourceId) !== String(assignment.templateRepoId)) {
@@ -650,9 +654,7 @@ class Repo184Service {
         }
         await this.verifyAssignmentTemplate(assignment);
         repository = await this.github.generateRepository(assignment, workUnit.repoName, workUnit.repoMarker);
-        const generatedSourceId = repository.template_repository && repository.template_repository.id;
-        const provenanceMatches = generatedSourceId !== undefined && generatedSourceId !== null &&
-          String(generatedSourceId) === String(assignment.templateRepoId);
+        const reportedSourceId = repository.template_repository && repository.template_repository.id;
         const generatedFields = repoFields(repository);
         await this.store.transaction(function recordGeneratedRepository(draft) {
           const unit = findWorkUnit(draft, workUnitId);
@@ -660,10 +662,11 @@ class Repo184Service {
             return;
           }
           Object.assign(unit, generatedFields, {
-            templateProvenance: provenanceMatches ? 'verified' : 'mismatch',
-            templateSourceRepoId: generatedSourceId === undefined ? null : generatedSourceId,
-            repoStatus: provenanceMatches ? 'provisioning' : 'error',
-            repoError: provenanceMatches ? '' : 'GitHub reported a different source template for the generated repository.',
+            templateProvenance: 'not_generated',
+            templateSourceRepoId: assignment.templateRepoId,
+            templateReportedRepoId: reportedSourceId === undefined ? null : reportedSourceId,
+            repoStatus: 'provisioning',
+            repoError: '',
             updatedAt: util.nowIso()
           });
           addAudit(draft, 'system', 'repository.generated', {
@@ -671,11 +674,24 @@ class Repo184Service {
             repoName: unit.repoName,
             repoId: generatedFields.repoId,
             templateSourceRepoId: unit.templateSourceRepoId,
+            templateReportedRepoId: unit.templateReportedRepoId,
             templateProvenance: unit.templateProvenance
           });
         });
-        if (!provenanceMatches) {
-          throw new util.AppError('GitHub reported that the generated repository came from a different template. No student access was granted.', 409, 'template_provenance_mismatch');
+        try {
+          await this.verifyAssignmentTemplate(assignment);
+        } catch (identityError) {
+          await this.store.transaction(function recordIdentityMismatch(draft) {
+            const unit = findWorkUnit(draft, workUnitId);
+            if (!unit) {
+              return;
+            }
+            unit.templateProvenance = 'identity_mismatch';
+            unit.repoStatus = 'error';
+            unit.repoError = 'The assignment template identity changed while GitHub was generating this repository.';
+            unit.updatedAt = util.nowIso();
+          });
+          throw new util.AppError('The assignment template identity changed while GitHub was generating this repository. No student access was granted.', 409, 'template_provenance_mismatch');
         }
       }
       if (!repository.private) {
@@ -737,8 +753,9 @@ class Repo184Service {
       return;
     }
     try {
-      if (workUnit.writeupTemplateProvenance === 'mismatch') {
-        throw new util.AppError('GitHub reported that this write-up repository was generated from a different template. Staff must release this claim and inspect the repository.', 409, 'writeup_template_provenance_mismatch');
+      if (workUnit.writeupTemplateProvenance === 'identity_mismatch' ||
+          (workUnit.writeupTemplateProvenance === 'mismatch' && workUnit.writeupRepoId === null)) {
+        throw new util.AppError('The write-up template identity changed while this repository was being generated. Staff must release this claim and inspect the repository.', 409, 'writeup_template_provenance_mismatch');
       }
       let repository = await this.github.getRepository(workUnit.writeupRepoName);
       if (repository) {
@@ -748,7 +765,8 @@ class Repo184Service {
         if (repository.private || repository.description !== workUnit.writeupRepoMarker) {
           throw new util.AppError('A repository with this write-up name already exists and was not created by this Repo184 record. Staff must resolve the collision.', 409, 'writeup_repository_collision');
         }
-        if (workUnit.writeupRepoId === null || workUnit.writeupTemplateProvenance !== 'verified') {
+        await this.verifyAssignmentWriteupTemplate(assignment);
+        if (workUnit.writeupRepoId === null) {
           const existingSourceId = repository.template_repository && repository.template_repository.id;
           if (existingSourceId === undefined || existingSourceId === null ||
               String(existingSourceId) !== String(assignment.writeupTemplateRepoId)) {
@@ -765,9 +783,7 @@ class Repo184Service {
           workUnit.writeupRepoName,
           workUnit.writeupRepoMarker
         );
-        const generatedSourceId = repository.template_repository && repository.template_repository.id;
-        const provenanceMatches = generatedSourceId !== undefined && generatedSourceId !== null &&
-          String(generatedSourceId) === String(assignment.writeupTemplateRepoId);
+        const reportedSourceId = repository.template_repository && repository.template_repository.id;
         const generatedFields = writeupRepoFields(repository);
         await this.store.transaction(function recordGeneratedWriteup(draft) {
           const unit = findWorkUnit(draft, workUnitId);
@@ -775,10 +791,11 @@ class Repo184Service {
             return;
           }
           Object.assign(unit, generatedFields, {
-            writeupTemplateProvenance: provenanceMatches ? 'verified' : 'mismatch',
-            writeupTemplateSourceRepoId: generatedSourceId === undefined ? null : generatedSourceId,
-            writeupRepoStatus: provenanceMatches ? 'provisioning' : 'error',
-            writeupRepoError: provenanceMatches ? '' : 'GitHub reported a different source template for the generated write-up repository.',
+            writeupTemplateProvenance: 'not_generated',
+            writeupTemplateSourceRepoId: assignment.writeupTemplateRepoId,
+            writeupTemplateReportedRepoId: reportedSourceId === undefined ? null : reportedSourceId,
+            writeupRepoStatus: 'provisioning',
+            writeupRepoError: '',
             updatedAt: util.nowIso()
           });
           addAudit(draft, 'system', 'writeup_repository.generated', {
@@ -786,11 +803,24 @@ class Repo184Service {
             repoName: unit.writeupRepoName,
             repoId: generatedFields.writeupRepoId,
             templateSourceRepoId: unit.writeupTemplateSourceRepoId,
+            templateReportedRepoId: unit.writeupTemplateReportedRepoId,
             templateProvenance: unit.writeupTemplateProvenance
           });
         });
-        if (!provenanceMatches) {
-          throw new util.AppError('GitHub reported that the generated write-up repository came from a different template. No student access was granted.', 409, 'writeup_template_provenance_mismatch');
+        try {
+          await this.verifyAssignmentWriteupTemplate(assignment);
+        } catch (identityError) {
+          await this.store.transaction(function recordWriteupIdentityMismatch(draft) {
+            const unit = findWorkUnit(draft, workUnitId);
+            if (!unit) {
+              return;
+            }
+            unit.writeupTemplateProvenance = 'identity_mismatch';
+            unit.writeupRepoStatus = 'error';
+            unit.writeupRepoError = 'The write-up template identity changed while GitHub was generating this repository.';
+            unit.updatedAt = util.nowIso();
+          });
+          throw new util.AppError('The write-up template identity changed while GitHub was generating this repository. No student access was granted.', 409, 'writeup_template_provenance_mismatch');
         }
       }
       if (repository.private) {

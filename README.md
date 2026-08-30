@@ -227,10 +227,12 @@ For each homework template:
 5. Keep the repository name stable after adding it to Repo184.
 
 Repo184 records the template's immutable GitHub repository ID. It checks that
-ID before generation and also verifies the source-template ID in GitHub's
-generated-repository response before granting student access. If a template is
-deleted, renamed, or replaced under the same name, provisioning stops for staff
-review. Generated repository names use `<repository-prefix>-<team-name>`. If
+ID immediately before and after generation. GitHub's optional
+`template_repository` response metadata is retained for diagnostics but is not
+used as the security decision because GitHub may omit it or report an upstream
+template. If a template is deleted, renamed, or replaced under the same name
+during generation, provisioning stops for staff review. Generated repository
+names use `<repository-prefix>-<team-name>`. If
 that name is already managed by Repo184 or already exists on GitHub,
 provisioning stops with an error instead of choosing a different name.
 

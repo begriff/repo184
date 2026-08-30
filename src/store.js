@@ -53,24 +53,31 @@ function migrateWriteupRepositories(state) {
     }
   });
   state.workUnits.forEach(function migrateWorkUnit(workUnit) {
-    if (workUnit.writeupEnabled !== undefined) {
-      return;
+    if (workUnit.templateReportedRepoId === undefined) {
+      workUnit.templateReportedRepoId = null;
+      changed = true;
     }
-    workUnit.writeupEnabled = false;
-    workUnit.writeupRepoName = '';
-    workUnit.writeupRepoMarker = '';
-    workUnit.writeupRepoId = null;
-    workUnit.writeupRepoHtmlUrl = '';
-    workUnit.writeupRepoCloneUrl = '';
-    workUnit.writeupRepoSshUrl = '';
-    workUnit.writeupTemplateProvenance = 'disabled';
-    workUnit.writeupTemplateSourceRepoId = null;
-    workUnit.writeupRepoStatus = 'disabled';
-    workUnit.writeupRepoError = '';
-    workUnit.writeupPagesUrl = '';
-    workUnit.writeupPagesStatus = 'disabled';
-    workUnit.writeupPagesError = '';
-    changed = true;
+    if (workUnit.writeupEnabled === undefined) {
+      workUnit.writeupEnabled = false;
+      workUnit.writeupRepoName = '';
+      workUnit.writeupRepoMarker = '';
+      workUnit.writeupRepoId = null;
+      workUnit.writeupRepoHtmlUrl = '';
+      workUnit.writeupRepoCloneUrl = '';
+      workUnit.writeupRepoSshUrl = '';
+      workUnit.writeupTemplateProvenance = 'disabled';
+      workUnit.writeupTemplateSourceRepoId = null;
+      workUnit.writeupRepoStatus = 'disabled';
+      workUnit.writeupRepoError = '';
+      workUnit.writeupPagesUrl = '';
+      workUnit.writeupPagesStatus = 'disabled';
+      workUnit.writeupPagesError = '';
+      changed = true;
+    }
+    if (workUnit.writeupTemplateReportedRepoId === undefined) {
+      workUnit.writeupTemplateReportedRepoId = null;
+      changed = true;
+    }
   });
   return changed;
 }
@@ -107,7 +114,7 @@ function validateState(state) {
     if (workUnit.lifecycle && ['active', 'release_pending', 'released'].indexOf(workUnit.lifecycle) === -1) {
       throw new Error('Work unit has an unsupported lifecycle state');
     }
-    if (['not_generated', 'verified', 'mismatch'].indexOf(workUnit.templateProvenance) === -1) {
+    if (['not_generated', 'verified', 'mismatch', 'identity_mismatch'].indexOf(workUnit.templateProvenance) === -1) {
       throw new Error('Work unit has an unsupported template provenance state');
     }
     const assignment = state.assignments.find(function matchingAssignment(item) {
@@ -128,7 +135,7 @@ function validateState(state) {
         throw new Error('Duplicate repository name in data store');
       }
       repoNames[workUnit.writeupRepoName] = true;
-      if (['not_generated', 'verified', 'mismatch'].indexOf(workUnit.writeupTemplateProvenance) === -1 ||
+      if (['not_generated', 'verified', 'mismatch', 'identity_mismatch'].indexOf(workUnit.writeupTemplateProvenance) === -1 ||
           ['provisioning', 'ready', 'error'].indexOf(workUnit.writeupRepoStatus) === -1 ||
           ['pending', 'ready', 'error'].indexOf(workUnit.writeupPagesStatus) === -1) {
         throw new Error('Work unit has an unsupported write-up repository state');

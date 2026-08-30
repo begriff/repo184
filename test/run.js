@@ -143,8 +143,7 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(team.members.length, 1);
   assert.strictEqual(team.members[0].accessStatus, 'ready');
   assert.strictEqual(github.repositories[team.repoName].private, true);
-  assert(/-[0-9a-f]{12}$/.test(team.repoName),
-    'managed repository names must include an unpredictable work-unit suffix');
+  assert.strictEqual(team.repoName, 'hw1-ray-tracers');
 
   let uncertainGrantCleanupCount = 0;
   const initialRemoveCollaborator = github.removeCollaborator.bind(github);
@@ -239,6 +238,7 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(bobSoloTeam.members.length, 1);
   const released = await service.releaseWorkUnit(bobSoloTeam.id, 'admin');
   assert.strictEqual(released.lifecycle, 'released');
+  await expectError(service.createWorkUnit('hw1', bob.id, 'Bob Solo'), 'repository_name_taken');
   const bobReplacement = await service.createWorkUnit('hw1', bob.id, 'Bob Replacement');
   assert.notStrictEqual(bobReplacement.id, bobSoloTeam.id);
   assert.notStrictEqual(bobReplacement.repoName, bobSoloTeam.repoName);

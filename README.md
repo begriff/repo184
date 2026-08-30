@@ -226,8 +226,9 @@ Repo184 records the template's immutable GitHub repository ID. It checks that
 ID before generation and also verifies the source-template ID in GitHub's
 generated-repository response before granting student access. If a template is
 deleted, renamed, or replaced under the same name, provisioning stops for staff
-review. Generated repository names include a random suffix, so another
-organization member cannot predictably reserve a classmate's destination name.
+review. Generated repository names use `<repository-prefix>-<team-name>`. If
+that name is already managed by Repo184 or already exists on GitHub,
+provisioning stops with an error instead of choosing a different name.
 
 After deployment, sign in to `/repo/admin` and add the assignment's display
 name, slug, template `owner/repository`, destination repository prefix, maximum

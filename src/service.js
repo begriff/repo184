@@ -441,14 +441,13 @@ class Repo184Service {
       }
 
       const id = util.randomId('work');
-      const randomSuffix = id.split('_').pop();
-      const readableRepoName = (assignment.repoPrefix + '-' + nameSlug).slice(0, 83).replace(/-+$/g, '');
-      const baseRepoName = readableRepoName + '-' + randomSuffix;
-      let repoName = baseRepoName;
-      let suffix = 2;
-      while (state.workUnits.some(function duplicateRepo(workUnit) { return workUnit.repoName === repoName; })) {
-        repoName = baseRepoName.slice(0, 92).replace(/-+$/g, '') + '-' + suffix;
-        suffix += 1;
+      const repoName = assignment.repoPrefix + '-' + nameSlug;
+      if (state.workUnits.some(function duplicateRepo(workUnit) { return workUnit.repoName === repoName; })) {
+        throw new util.AppError(
+          'That repository name is already managed. Choose a different team name.',
+          409,
+          'repository_name_taken'
+        );
       }
       const now = util.nowIso();
       const workUnit = {

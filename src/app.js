@@ -339,12 +339,8 @@ function createRouter(overrides) {
     next();
   }
 
-  async function validAdminPassword(password) {
-    if (config.adminPasswordHash) {
-      return util.verifyPassword(password, config.adminPasswordHash);
-    }
-    return config.nodeEnv !== 'production' && Boolean(config.adminPassword) &&
-      util.constantTimeEqual(password, config.adminPassword);
+  function validAdminPassword(password) {
+    return Boolean(config.adminPassword) && util.constantTimeEqual(password, config.adminPassword);
   }
 
   router.get('/', asyncRoute(async function home(req, res) {

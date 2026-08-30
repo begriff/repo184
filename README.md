@@ -246,7 +246,7 @@ BASE_URL=https://cs184.eecs.berkeley.edu/repo
 COURSE_HOMEWORK_URL=/fa26/hw/
 SOCKET_PATH=/srv/appsockets/cs184/repo184/app.sock
 SESSION_SECRET=<at-least-32-random-bytes>
-ADMIN_PASSWORD_HASH=<scrypt-hash-produced-by-this-project>
+ADMIN_PASSWORD=<staff-password>
 
 GITHUB_ORG=cal-cs184-student
 GITHUB_CLIENT_ID=<login-app-client-id>
@@ -262,20 +262,9 @@ DEV_FAKE_GITHUB=0
 Generate a session secret locally with `openssl rand -hex 32` and copy only the
 result into `.env`.
 
-Do not store the requested staff password in `.env` or in this repository.
-Hash it with the supplied utility and store only its output as
-`ADMIN_PASSWORD_HASH`. To keep the password out of shell history:
-
-```sh
-read -rs REPO184_ADMIN_PASSWORD
-echo
-printf '%s' "$REPO184_ADMIN_PASSWORD" | npm run --silent hash-password
-unset REPO184_ADMIN_PASSWORD
-```
-
-Use a secure editor to paste the resulting hash into `.env`. The private key
-must be one quoted line with each PEM newline represented by the two literal
-characters `\n`. Restrict both `.env` and the data directory:
+Set `ADMIN_PASSWORD` directly in `.env`. The private key must be one quoted
+line with each PEM newline represented by the two literal characters `\n`.
+Restrict both `.env` and the data directory:
 
 ```sh
 chmod 600 /home/ff/cs184/repo184/.env
@@ -407,8 +396,8 @@ from the operational JSON snapshots.
 - [ ] Each template is sanitized, marked as a template, and tested.
 - [ ] Staff understand that Repo184 pins each template's immutable repository
       ID; a renamed or replaced template must be deliberately reconfigured.
-- [ ] `.env` contains only production values, `DEV_FAKE_GITHUB=0`, a password
-      hash rather than plaintext, and file mode `0600`.
+- [ ] `.env` contains only production values, `DEV_FAKE_GITHUB=0`, an
+      `ADMIN_PASSWORD`, and file mode `0600`.
 - [ ] The data file has a fresh off-checkout backup.
 - [ ] Only one Repo184 process uses the data file.
 - [ ] The service passes its Unix-socket health check.

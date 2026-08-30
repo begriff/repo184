@@ -421,10 +421,6 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(provenanceRetry.templateProvenance, 'mismatch',
     'a terminal template provenance failure must not be adopted on retry');
 
-  const passwordHash = await util.hashPassword('staff-password');
-  assert.strictEqual(await util.verifyPassword('staff-password', passwordHash), true);
-  assert.strictEqual(await util.verifyPassword('wrong-password', passwordHash), false);
-
   const staleTemporary = config.dataFile + '.999999.1.tmp';
   fs.writeFileSync(staleTemporary, 'stale');
   const reloaded = new storeModule.JsonStore(config.dataFile);
@@ -469,9 +465,9 @@ function singleInstanceTests(testDirectory) {
 function attemptLimiterTests() {
   const limiter = createRouter.createAttemptLimiter();
   const reservations = [limiter.reserve('same-address'), limiter.reserve('same-address')];
-  assert(reservations.every(Boolean), 'two password checks may run concurrently');
+  assert(reservations.every(Boolean), 'two password attempts may run concurrently');
   assert.strictEqual(limiter.reserve('another-address'), null,
-    'the global in-flight cap must bound simultaneous password hashes');
+    'the global in-flight cap must bound simultaneous password attempts');
   reservations.forEach(function finish(reservation) { reservation.finish(false); });
   for (let index = 0; index < 3; index += 1) {
     const attempt = limiter.reserve('same-address');
@@ -494,7 +490,7 @@ function attemptLimiterTests() {
     globalAttempt.finish(false);
   }
   assert.strictEqual(globalLimiter.reserve('distributed-over-budget'), null,
-    'distributed sources must share a bounded time-window password-hash budget');
+    'distributed sources must share a bounded time-window password-attempt budget');
 }
 
 function githubActionLimiterTests() {
@@ -794,6 +790,14 @@ async function productionBoundaryTests(testDirectory) {
   assert.throws(function invalidEnvironment() {
     configModule.validateBaseConfig(configModule.loadConfig({ nodeEnv: 'prod' }));
   }, /NODE_ENV must be exactly/);
+  assert.throws(function missingProductionAdminPassword() {
+    configModule.validateBaseConfig(configModule.loadConfig({
+      nodeEnv: 'production',
+      basePath: '/repo',
+      baseUrl: 'https://cs184.eecs.berkeley.edu/repo',
+      sessionSecret: 'production-boundary-test-session-secret-123456789'
+    }));
+  }, /ADMIN_PASSWORD is required/);
   const keyPair = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -804,7 +808,7 @@ async function productionBoundaryTests(testDirectory) {
     basePath: '/repo',
     baseUrl: 'https://cs184.eecs.berkeley.edu/repo',
     sessionSecret: 'production-boundary-test-session-secret-123456789',
-    adminPasswordHash: await util.hashPassword('local-admin'),
+    adminPassword: 'local-admin',
     githubAppId: '1234',
     githubClientId: 'Iv1.test',
     githubClientSecret: 'test-client-secret',
@@ -835,6 +839,22 @@ async function productionBoundaryTests(testDirectory) {
     assert.strictEqual(response.status, 200);
     assert(jar.lastSetCookie.toLowerCase().indexOf('secure') !== -1,
       'proxied production sessions must set Secure cookies');
+
+    response = await httpRequest(server, jar, '/repo/admin', {
+      headers: { 'X-Forwarded-Proto': 'https' }
+    });
+    const adminCsrf = csrfFrom(response.body);
+    response = await httpRequest(server, jar, '/repo/admin/login', {
+      method: 'POST',
+      headers: { 'X-Forwarded-Proto': 'https' },
+      body: encodeForm({ csrf: adminCsrf, password: 'local-admin' })
+    });
+    assert.strictEqual(response.status, 302, 'production must accept ADMIN_PASSWORD');
+    response = await httpRequest(server, jar, '/repo/admin', {
+      headers: { 'X-Forwarded-Proto': 'https' }
+    });
+    assert(response.body.indexOf('Add assignment') !== -1,
+      'successful production admin login must open the admin page');
   } finally {
     await new Promise(function close(resolve) { server.close(resolve); });
   }

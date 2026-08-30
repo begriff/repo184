@@ -7,7 +7,6 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "NODE_ENV=development DEV_FAKE_GITHUB=1 node src/server.js",
-    "hash-password": "node scripts/hash-password.js",
     "test": "node test/run.js",
     "check": "node scripts/check-node11-syntax.js"
   },

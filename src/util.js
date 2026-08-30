@@ -95,48 +95,6 @@ function constantTimeEqual(left, right) {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function scrypt(password, salt, length) {
-  return new Promise(function derive(resolve, reject) {
-    crypto.scrypt(password, salt, length, function onScrypt(error, key) {
-      if (error) {
-        return reject(error);
-      }
-      return resolve(key);
-    });
-  });
-}
-
-async function hashPassword(password) {
-  const value = String(password || '');
-  if (!value) {
-    throw new AppError('Password cannot be empty', 400, 'empty_password');
-  }
-  const salt = crypto.randomBytes(16);
-  const derived = await scrypt(value, salt, 64);
-  return 'scrypt$' + salt.toString('base64') + '$' + derived.toString('base64');
-}
-
-async function verifyPassword(password, encoded) {
-  const pieces = String(encoded || '').split('$');
-  if (pieces.length !== 3 || pieces[0] !== 'scrypt') {
-    return false;
-  }
-
-  let salt;
-  let expected;
-  try {
-    salt = Buffer.from(pieces[1], 'base64');
-    expected = Buffer.from(pieces[2], 'base64');
-  } catch (error) {
-    return false;
-  }
-  if (!salt.length || !expected.length) {
-    return false;
-  }
-  const actual = await scrypt(String(password || ''), salt, expected.length);
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
-}
-
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -146,11 +104,9 @@ module.exports = {
   base64Url: base64Url,
   clone: clone,
   constantTimeEqual: constantTimeEqual,
-  hashPassword: hashPassword,
   nowIso: nowIso,
   parseTemplate: parseTemplate,
   randomId: randomId,
   slugify: slugify,
-  validateAssignmentInput: validateAssignmentInput,
-  verifyPassword: verifyPassword
+  validateAssignmentInput: validateAssignmentInput
 };

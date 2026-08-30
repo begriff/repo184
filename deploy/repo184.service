@@ -1,0 +1,21 @@
+[Unit]
+Description=Repo184 assignment repository service
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/is-instapphost
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ff/cs184/repo184
+Environment=NODE_ENV=production
+UMask=0007
+# Keep this path aligned with the supported LTS version installed below.
+ExecStart=/home/ff/cs184/.nvm/versions/node/v24.20.0/bin/node src/server.js
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

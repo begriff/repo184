@@ -1,0 +1,799 @@
+'use strict';
+
+const assert = require('assert');
+const crypto = require('crypto');
+const fs = require('fs');
+const http = require('http');
+const os = require('os');
+const path = require('path');
+const express = require('express');
+const createRouter = require('../src/app');
+const configModule = require('../src/config');
+const githubModule = require('../src/github');
+const serviceModule = require('../src/service');
+const singleInstance = require('../src/single-instance');
+const storeModule = require('../src/store');
+const util = require('../src/util');
+const views = require('../src/views');
+
+function removeDirectory(directory) {
+  if (!fs.existsSync(directory)) {
+    return;
+  }
+  fs.readdirSync(directory).forEach(function remove(name) {
+    const fullPath = path.join(directory, name);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      removeDirectory(fullPath);
+    } else {
+      fs.unlinkSync(fullPath);
+    }
+  });
+  fs.rmdirSync(directory);
+}
+
+async function expectError(operation, code) {
+  let error = null;
+  try {
+    await operation;
+  } catch (caught) {
+    error = caught;
+  }
+  assert(error, 'Expected operation to fail with ' + code);
+  assert.strictEqual(error.code, code);
+}
+
+async function addUser(service, github, login, membershipState) {
+  const profile = await github.getFakeUser(login);
+  let membership;
+  if (membershipState === 'active') {
+    membership = await github.onboardUser(profile);
+  } else {
+    membership = { state: membershipState, role: 'member' };
+  }
+  return service.rememberUser(profile, membership);
+}
+
+function encodeForm(values) {
+  return Object.keys(values).map(function pair(key) {
+    return encodeURIComponent(key) + '=' + encodeURIComponent(values[key]);
+  }).join('&');
+}
+
+function httpRequest(server, cookieJar, requestPath, options) {
+  const settings = options || {};
+  const body = settings.body || '';
+  const headers = Object.assign({}, settings.headers || {});
+  if (cookieJar.cookie) {
+    headers.Cookie = cookieJar.cookie;
+  }
+  if (body) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    headers['Content-Length'] = Buffer.byteLength(body);
+  }
+  return new Promise(function execute(resolve, reject) {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: server.address().port,
+      path: requestPath,
+      method: settings.method || 'GET',
+      headers: headers
+    }, function response(incoming) {
+      const chunks = [];
+      incoming.on('data', function data(chunk) { chunks.push(chunk); });
+      incoming.on('end', function end() {
+        const setCookie = incoming.headers['set-cookie'];
+        if (setCookie && setCookie.length) {
+          cookieJar.cookie = setCookie[0].split(';')[0];
+          cookieJar.lastSetCookie = setCookie[0];
+        }
+        resolve({
+          status: incoming.statusCode,
+          headers: incoming.headers,
+          body: Buffer.concat(chunks).toString('utf8')
+        });
+      });
+    });
+    request.on('error', reject);
+    if (body) {
+      request.write(body);
+    }
+    request.end();
+  });
+}
+
+function csrfFrom(html) {
+  const match = html.match(/name="csrf" value="([^"]+)"/);
+  assert(match, 'Expected a CSRF token in rendered HTML');
+  return match[1];
+}
+
+async function serviceTests(testDirectory) {
+  const config = configModule.loadConfig({
+    nodeEnv: 'development',
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1:3000/repo',
+    sessionSecret: 'test-session-secret-with-more-than-24-characters',
+    adminPassword: 'local-admin',
+    dataFile: path.join(testDirectory, 'service.json'),
+    devFakeGithub: true
+  });
+  const store = new storeModule.JsonStore(config.dataFile);
+  const github = new githubModule.FakeGitHubClient(config);
+  const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
+  await store.init();
+
+  const alice = await addUser(service, github, 'alice-184', 'active');
+  const bob = await addUser(service, github, 'bob-184', 'active');
+  const carol = await addUser(service, github, 'carol-184', 'active');
+  const dave = await addUser(service, github, 'dave-184', 'pending');
+
+  const assignment = await service.createAssignment({
+    slug: 'hw1',
+    title: 'Homework 1',
+    template: 'cal-cs184-student/hw1-template',
+    repoPrefix: 'hw1',
+    maxTeamSize: '2',
+    status: 'open'
+  }, 'admin');
+  assert.strictEqual(assignment.maxTeamSize, 2);
+
+  const team = await service.createWorkUnit('hw1', alice.id, 'Ray Tracers');
+  assert.strictEqual(team.repoStatus, 'ready');
+  assert.strictEqual(team.members.length, 1);
+  assert.strictEqual(team.members[0].accessStatus, 'ready');
+  assert.strictEqual(github.repositories[team.repoName].private, true);
+  assert(/-[0-9a-f]{12}$/.test(team.repoName),
+    'managed repository names must include an unpredictable work-unit suffix');
+
+  let uncertainGrantCleanupCount = 0;
+  const initialRemoveCollaborator = github.removeCollaborator.bind(github);
+  github.removeCollaborator = async function countUncertainCleanup(repoName, login) {
+    uncertainGrantCleanupCount += 1;
+    return initialRemoveCollaborator(repoName, login);
+  };
+  await store.transaction(function markUncertainGrant(state) {
+    const unit = state.workUnits.find(function match(item) { return item.id === team.id; });
+    unit.members[0].accessStatus = 'granting';
+  });
+  await service.syncMemberAccess(team.id, alice.id);
+  assert.strictEqual(uncertainGrantCleanupCount, 1,
+    'retrying an uncertain grant must revoke any collaborator or invitation before re-granting');
+  assert.strictEqual((await service.getWorkUnit(team.id)).members[0].accessStatus, 'ready');
+  github.removeCollaborator = initialRemoveCollaborator;
+
+  github.renameFakeUser(alice.numericId, 'alice-renamed');
+  const replacementAlice = await github.getFakeUser('alice-184');
+  await github.onboardUser(replacementAlice);
+  await service.syncMemberAccess(team.id, alice.id);
+  const renamedAlice = await service.getUser(alice.id);
+  assert.strictEqual(renamedAlice.login, 'alice-renamed', 'current login must be resolved from the immutable account ID');
+  assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['alice-renamed']), true);
+  assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['alice-184']), false,
+    'access must not be granted to a replacement account that claimed an old username');
+  const correctAliceMembership = github.memberships['alice-renamed'];
+  github.memberships['alice-renamed'] = Object.assign({}, correctAliceMembership, { numericId: replacementAlice.numericId });
+  await expectError(service.refreshMembership(alice.id), 'github_identity_mismatch');
+  github.memberships['alice-renamed'] = correctAliceMembership;
+  await service.refreshMembership(alice.id);
+
+  const sameTeam = await service.createWorkUnit('hw1', alice.id, 'Ray Tracers');
+  assert.strictEqual(sameTeam.id, team.id, 'repeat creation must be idempotent');
+  const renamedTeam = await service.renameTeam(team.id, 'Ray Makers', 'admin');
+  assert.strictEqual(renamedTeam.teamSlug, 'ray-makers', 'team-name uniqueness must follow staff renames');
+
+  const bobRequest = await service.requestToJoin('hw1', team.id, bob.id);
+  await expectError(service.resolveJoinRequest(bobRequest.id, carol.id, 'approve', false), 'not_team_member');
+  const paired = await service.resolveJoinRequest(bobRequest.id, alice.id, 'approve', false);
+  assert.strictEqual(paired.members.length, 2);
+  assert.strictEqual(paired.members[1].accessStatus, 'ready');
+  await expectError(service.requestToJoin('hw1', team.id, carol.id), 'team_full');
+
+  const carolTeam = await service.createWorkUnit('hw1', carol.id, 'Carol Solo');
+  assert.strictEqual(carolTeam.kind, 'team');
+  assert.strictEqual(carolTeam.members.length, 1);
+  assert.strictEqual(carolTeam.repoStatus, 'ready');
+  const carolRepository = github.repositories[carolTeam.repoName];
+  const carolRepositoryId = carolRepository.id;
+  carolRepository.id = carolRepositoryId + 1000;
+  await expectError(service.releaseWorkUnit(carolTeam.id, 'admin'), 'release_failed');
+  const pendingCarolRelease = await service.getWorkUnit(carolTeam.id);
+  assert.strictEqual(pendingCarolRelease.lifecycle, 'release_pending');
+  assert.strictEqual(Boolean(carolRepository.collaborators['carol-184']), true,
+    'an ID mismatch must not revoke access on a replacement repository');
+  carolRepository.id = carolRepositoryId;
+  carolRepository.private = false;
+  const releasedCarol = await service.releaseWorkUnit(carolTeam.id, 'admin');
+  assert.strictEqual(releasedCarol.lifecycle, 'released');
+  assert.strictEqual(Boolean(carolRepository.collaborators['carol-184']), false);
+  assert.strictEqual(releasedCarol.repoStatus, 'error');
+  assert(releasedCarol.repoError.indexOf('public') !== -1,
+    'release must keep public-visibility drift prominently flagged after revocation');
+  carolRepository.private = true;
+  github.renameFakeUser(bob.numericId, 'bob-renamed');
+  const replacementBob = await github.getFakeUser('bob-184');
+  await github.onboardUser(replacementBob);
+  github.repositories[team.repoName].private = false;
+  const reducedTeam = await service.removeTeamMember(team.id, bob.id, 'admin');
+  assert.strictEqual(reducedTeam.members.length, 1);
+  assert.strictEqual(reducedTeam.repoStatus, 'error');
+  assert(reducedTeam.repoError.indexOf('public') !== -1,
+    'member removal must keep public-visibility drift prominently flagged after revocation');
+  assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['bob-renamed']), false,
+    'member removal must revoke the current account after a username change');
+  assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['bob-184']), false,
+    'member removal must not target the replacement owner of an old username');
+  github.repositories[team.repoName].private = true;
+  const repairedTeam = await service.provisionWorkUnit(team.id);
+  assert.strictEqual(repairedTeam.repoStatus, 'ready');
+  assert.strictEqual(repairedTeam.repoError, '');
+  const requestCountBeforeReuse = reducedTeam.requests.length;
+  const reusedBobRequest = await service.requestToJoin('hw1', team.id, bob.id);
+  assert.strictEqual(reusedBobRequest.id, bobRequest.id, 'resolved request records should be reused instead of growing without bound');
+  await service.cancelJoinRequest(reusedBobRequest.id, bob.id);
+  const teamAfterRequestReuse = await service.getWorkUnit(team.id);
+  assert.strictEqual(teamAfterRequestReuse.requests.length, requestCountBeforeReuse);
+  await expectError(service.removeTeamMember(team.id, alice.id, 'admin'), 'last_member');
+  const bobSoloTeam = await service.createWorkUnit('hw1', bob.id, 'Bob Solo');
+  assert.strictEqual(bobSoloTeam.kind, 'team');
+  assert.strictEqual(bobSoloTeam.members.length, 1);
+  const released = await service.releaseWorkUnit(bobSoloTeam.id, 'admin');
+  assert.strictEqual(released.lifecycle, 'released');
+  const bobReplacement = await service.createWorkUnit('hw1', bob.id, 'Bob Replacement');
+  assert.notStrictEqual(bobReplacement.id, bobSoloTeam.id);
+  assert.notStrictEqual(bobReplacement.repoName, bobSoloTeam.repoName);
+  assert.strictEqual(github.repositories[bobSoloTeam.repoName].private, true, 'released repositories are preserved');
+  const replacementRepository = github.repositories[bobReplacement.repoName];
+  const replacementRepositoryId = replacementRepository.id;
+  delete github.repositories[bobReplacement.repoName];
+  const missingRepositoryRetry = await service.provisionWorkUnit(bobReplacement.id);
+  assert.strictEqual(missingRepositoryRetry.repoStatus, 'error');
+  assert(missingRepositoryRetry.repoError.indexOf('no longer exists') !== -1);
+  assert.strictEqual(github.repositories[bobReplacement.repoName], undefined,
+    'a missing established repository must never be silently recreated');
+  github.repositories[bobReplacement.repoName] = replacementRepository;
+  replacementRepository.id = replacementRepositoryId + 1000;
+  const identityMismatchRetry = await service.provisionWorkUnit(bobReplacement.id);
+  assert.strictEqual(identityMismatchRetry.repoStatus, 'error');
+  assert(identityMismatchRetry.repoError.indexOf('different GitHub repository') !== -1,
+    'a known repository name must not be adopted when its immutable ID changes');
+  replacementRepository.id = replacementRepositoryId;
+  const identityRestored = await service.provisionWorkUnit(bobReplacement.id);
+  assert.strictEqual(identityRestored.repoError, '');
+  const originalGetRepository = github.getRepository.bind(github);
+  github.getRepository = async function transientFailure() {
+    throw new Error('temporary GitHub lookup failure');
+  };
+  const retryAfterFailure = await service.provisionWorkUnit(bobReplacement.id);
+  assert.strictEqual(retryAfterFailure.repoStatus, 'ready', 'a transient retry must not erase known repository identity');
+  assert(retryAfterFailure.repoError.indexOf('temporary GitHub lookup failure') !== -1);
+  const bobDashboardWithError = await service.getDashboard(bob.id);
+  const bobDashboardHtml = views.dashboardPage({
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    githubOrg: config.githubOrg,
+    courseHomeworkUrl: '/fa26/hw/',
+    csrf: 'test-csrf',
+    user: bobDashboardWithError.user,
+    dashboard: bobDashboardWithError
+  });
+  assert(bobDashboardHtml.indexOf('verification error') !== -1);
+  assert.strictEqual(bobDashboardHtml.indexOf(bobReplacement.repoHtmlUrl), -1,
+    'a repository with a verification error must not be presented as ready to open');
+  github.getRepository = originalGetRepository;
+  await store.transaction(function simulateLegacyErrorState(state) {
+    const unit = state.workUnits.find(function match(item) { return item.id === bobReplacement.id; });
+    unit.repoStatus = 'error';
+  });
+  const releasedReplacement = await service.releaseWorkUnit(bobReplacement.id, 'admin');
+  assert.strictEqual(releasedReplacement.lifecycle, 'released');
+  assert.strictEqual(Boolean(github.repositories[bobReplacement.repoName].collaborators['bob-renamed']), false,
+    'release must revoke access whenever a repository ID is known, even if status is error');
+  await expectError(service.createWorkUnit('hw1', dave.id, 'Dave Solo'), 'membership_inactive');
+
+  await expectError(service.updateAssignment(assignment.id, {
+    slug: 'hw1',
+    title: 'Homework 1',
+    template: 'cal-cs184-student/hw1-template',
+    repoPrefix: 'hw1',
+    maxTeamSize: '1',
+    status: 'open'
+  }, 'admin'), 'assignment_locked');
+
+  await service.createAssignment({
+    slug: 'hw2',
+    title: 'Homework 2',
+    template: 'cal-cs184-student/hw2-template',
+    repoPrefix: 'hw2',
+    maxTeamSize: '2',
+    status: 'open'
+  }, 'admin');
+  const secondTeam = await service.createWorkUnit('hw2', alice.id, 'Normals');
+  const requestBob = await service.requestToJoin('hw2', secondTeam.id, bob.id);
+  const requestCarol = await service.requestToJoin('hw2', secondTeam.id, carol.id);
+  const approvals = await Promise.all([
+    service.resolveJoinRequest(requestBob.id, alice.id, 'approve', false).then(function success(value) {
+      return { ok: true, value: value };
+    }, function failure(error) {
+      return { ok: false, error: error };
+    }),
+    service.resolveJoinRequest(requestCarol.id, alice.id, 'approve', false).then(function success(value) {
+      return { ok: true, value: value };
+    }, function failure(error) {
+      return { ok: false, error: error };
+    })
+  ]);
+  assert.strictEqual(approvals.filter(function success(item) { return item.ok; }).length, 1,
+    'only one concurrent approval may take the final team place');
+  const finalTeam = await service.getWorkUnit(secondTeam.id);
+  assert.strictEqual(finalTeam.members.length, 2);
+  const losingUser = finalTeam.members.some(function member(item) { return item.userId === bob.id; }) ? carol : bob;
+  const losingDashboard = await service.getDashboard(losingUser.id);
+  const hw2Dashboard = losingDashboard.assignments.find(function row(item) { return item.assignment.slug === 'hw2'; });
+  assert(hw2Dashboard.resolvedRequest, 'the student whose request lost the final-place race should see the outcome');
+  assert.strictEqual(hw2Dashboard.resolvedRequest.status, 'rejected');
+
+  const originalRemoveCollaborator = github.removeCollaborator.bind(github);
+  let releaseRemovalCount = 0;
+  github.removeCollaborator = async function failSecondRemoval(repoName, login) {
+    releaseRemovalCount += 1;
+    if (releaseRemovalCount === 2) {
+      throw new Error('temporary collaborator removal failure');
+    }
+    return originalRemoveCollaborator(repoName, login);
+  };
+  await expectError(service.releaseWorkUnit(secondTeam.id, 'admin'), 'release_failed');
+  const partiallyReleasedTeam = await service.getWorkUnit(secondTeam.id);
+  const confirmedRevoked = partiallyReleasedTeam.members.find(function revoked(item) { return item.accessStatus === 'revoked'; });
+  const failedRevocation = partiallyReleasedTeam.members.find(function failed(item) { return item.accessStatus === 'revocation_error'; });
+  assert(confirmedRevoked && failedRevocation, 'partial revocation progress must be saved for retry');
+  const confirmedRevokedUser = await service.getUser(confirmedRevoked.userId);
+  github.removeCollaborator = originalRemoveCollaborator;
+  const originalGetUserById = github.getUserById.bind(github);
+  github.getUserById = async function rejectAlreadyRevokedLookup(accountId) {
+    if (String(accountId) === String(confirmedRevokedUser.numericId)) {
+      throw new githubModule.GitHubError('account no longer exists', 404);
+    }
+    return originalGetUserById(accountId);
+  };
+  const fullyReleasedTeam = await service.releaseWorkUnit(secondTeam.id, 'admin');
+  assert.strictEqual(fullyReleasedTeam.lifecycle, 'released',
+    'release retry must skip members whose revocation was already confirmed');
+  github.getUserById = originalGetUserById;
+
+  const erin = await addUser(service, github, 'erin-184', 'active');
+  const templateKey = 'cal-cs184-student/hw1-template';
+  const originalTemplate = Object.assign({}, github.templates[templateKey]);
+  github.replaceFakeTemplate('cal-cs184-student', 'hw1-template');
+  const templateBlocked = await service.createWorkUnit('hw1', erin.id, 'Erin Solo');
+  assert.strictEqual(templateBlocked.repoStatus, 'error');
+  assert(templateBlocked.repoError.indexOf('different GitHub repository') !== -1,
+    'a template name reclaimed by a different repository must not be provisioned');
+  assert.strictEqual(github.repositories[templateBlocked.repoName], undefined);
+  github.templates[templateKey] = originalTemplate;
+
+  const frank = await addUser(service, github, 'frank-184', 'active');
+  const originalGenerateRepository = github.generateRepository.bind(github);
+  github.generateRepository = async function swapTemplateDuringGeneration(assignmentValue, repoName, marker) {
+    const trustedTemplate = Object.assign({}, github.templates[templateKey]);
+    github.replaceFakeTemplate('cal-cs184-student', 'hw1-template');
+    const repository = await originalGenerateRepository(assignmentValue, repoName, marker);
+    github.templates[templateKey] = trustedTemplate;
+    return repository;
+  };
+  const provenanceBlocked = await service.createWorkUnit('hw1', frank.id, 'Frank Solo');
+  assert.strictEqual(provenanceBlocked.repoStatus, 'error');
+  assert.strictEqual(provenanceBlocked.templateProvenance, 'mismatch');
+  assert.notStrictEqual(provenanceBlocked.repoId, null,
+    'an untrusted generated repository must retain its immutable ID for staff cleanup');
+  assert.strictEqual(Boolean(github.repositories[provenanceBlocked.repoName].collaborators), false,
+    'template provenance failure must happen before any student collaborator is granted');
+  github.generateRepository = originalGenerateRepository;
+  const provenanceRetry = await service.provisionWorkUnit(provenanceBlocked.id);
+  assert.strictEqual(provenanceRetry.templateProvenance, 'mismatch',
+    'a terminal template provenance failure must not be adopted on retry');
+
+  const passwordHash = await util.hashPassword('staff-password');
+  assert.strictEqual(await util.verifyPassword('staff-password', passwordHash), true);
+  assert.strictEqual(await util.verifyPassword('wrong-password', passwordHash), false);
+
+  const staleTemporary = config.dataFile + '.999999.1.tmp';
+  fs.writeFileSync(staleTemporary, 'stale');
+  const reloaded = new storeModule.JsonStore(config.dataFile);
+  const snapshot = await reloaded.snapshot();
+  assert.strictEqual(fs.existsSync(staleTemporary), false, 'startup must remove stale atomic-write files');
+  assert.strictEqual(snapshot.assignments.length, 2);
+  assert.strictEqual(snapshot.workUnits.length, 7);
+
+  const legacyState = util.clone(snapshot);
+  const legacyUnit = legacyState.workUnits.find(function oneMember(item) { return item.members.length === 1; });
+  const legacyUser = legacyState.users[legacyUnit.members[0].userId];
+  legacyUnit.kind = 'individual';
+  legacyUnit.displayName = '@' + legacyUser.login;
+  legacyUnit.teamSlug = '';
+  legacyUnit.joinCode = '';
+  const migrationFile = path.join(testDirectory, 'legacy-individual.json');
+  fs.writeFileSync(migrationFile, JSON.stringify(legacyState, null, 2) + '\n');
+  const migratedStore = new storeModule.JsonStore(migrationFile);
+  const migratedSnapshot = await migratedStore.snapshot();
+  const migratedUnit = migratedSnapshot.workUnits.find(function sameUnit(item) { return item.id === legacyUnit.id; });
+  assert.strictEqual(migratedUnit.kind, 'team', 'legacy individual repositories must become one-person teams');
+  assert.strictEqual(migratedUnit.displayName, legacyUser.login);
+  assert(migratedUnit.teamSlug);
+  assert(migratedUnit.joinCode);
+}
+
+function singleInstanceTests(testDirectory) {
+  const dataFile = path.join(testDirectory, 'locked.json');
+  const release = singleInstance.acquire(dataFile);
+  assert.throws(function secondProcess() {
+    singleInstance.acquire(dataFile);
+  }, /already using/);
+  release();
+  const releaseAgain = singleInstance.acquire(dataFile);
+  releaseAgain();
+
+  fs.writeFileSync(dataFile + '.lock', JSON.stringify({ pid: 99999999 }) + '\n');
+  const releaseStale = singleInstance.acquire(dataFile);
+  releaseStale();
+}
+
+function attemptLimiterTests() {
+  const limiter = createRouter.createAttemptLimiter();
+  const reservations = [limiter.reserve('same-address'), limiter.reserve('same-address')];
+  assert(reservations.every(Boolean), 'two password checks may run concurrently');
+  assert.strictEqual(limiter.reserve('another-address'), null,
+    'the global in-flight cap must bound simultaneous password hashes');
+  reservations.forEach(function finish(reservation) { reservation.finish(false); });
+  for (let index = 0; index < 3; index += 1) {
+    const attempt = limiter.reserve('same-address');
+    assert(attempt);
+    attempt.finish(false);
+  }
+  assert.strictEqual(limiter.reserve('same-address'), null,
+    'failed attempts remain limited for the full window');
+  const successful = limiter.reserve('fresh-address');
+  assert(successful);
+  successful.finish(true);
+  const afterSuccess = limiter.reserve('fresh-address');
+  assert(afterSuccess, 'a successful login clears that address record');
+  afterSuccess.finish(false);
+
+  const globalLimiter = createRouter.createAttemptLimiter();
+  for (let index = 0; index < 100; index += 1) {
+    const globalAttempt = globalLimiter.reserve('distributed-' + index);
+    assert(globalAttempt);
+    globalAttempt.finish(false);
+  }
+  assert.strictEqual(globalLimiter.reserve('distributed-over-budget'), null,
+    'distributed sources must share a bounded time-window password-hash budget');
+}
+
+function githubActionLimiterTests() {
+  const limiter = createRouter.createGithubActionLimiter();
+  for (let index = 0; index < 20; index += 1) {
+    assert.strictEqual(limiter.take([
+      { key: 'user:student', limit: 20 },
+      { key: 'ip:shared', limit: 100 }
+    ]), true);
+  }
+  assert.strictEqual(limiter.take([
+    { key: 'user:student', limit: 20 },
+    { key: 'ip:shared', limit: 100 }
+  ]), false, 'one signed-in account must not consume GitHub actions indefinitely');
+
+  const globalLimiter = createRouter.createGithubActionLimiter();
+  for (let index = 0; index < 2000; index += 1) {
+    assert.strictEqual(globalLimiter.take([{ key: 'distributed:' + index, limit: 1 }]), true);
+  }
+  assert.strictEqual(globalLimiter.take([{ key: 'distributed:over-budget', limit: 1 }]), false,
+    'distributed accounts must share a bounded GitHub-action window');
+
+  const isolatedSmallLimiter = createRouter.createGithubActionLimiter(3);
+  for (let index = 0; index < 3; index += 1) {
+    assert.strictEqual(isolatedSmallLimiter.take([{ key: 'small:' + index, limit: 1 }]), true);
+  }
+  assert.strictEqual(isolatedSmallLimiter.take([{ key: 'small:over-budget', limit: 1 }]), false,
+    'separate student, OAuth, and admin limiter instances must honor independent global caps');
+}
+
+async function githubTransportTests() {
+  const server = http.createServer(function partialResponse(req, res) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{"partial":');
+    setImmediate(function abortResponse() { res.destroy(); });
+  });
+  await new Promise(function listen(resolve) { server.listen(0, '127.0.0.1', resolve); });
+  try {
+    let rejected = false;
+    try {
+      await githubModule.requestJson({
+        hostname: '127.0.0.1',
+        port: server.address().port,
+        path: '/',
+        transport: http,
+        timeout: 2000
+      });
+    } catch (error) {
+      rejected = true;
+    }
+    assert.strictEqual(rejected, true, 'an aborted GitHub response must reject instead of hanging');
+  } finally {
+    await new Promise(function close(resolve) { server.close(resolve); });
+  }
+
+  const client = new githubModule.GitHubClient({
+    githubAppId: '1',
+    githubClientId: 'client',
+    githubClientSecret: 'secret',
+    githubInstallationId: '2',
+    githubPrivateKey: 'test-key'
+  });
+  let fetchCount = 0;
+  let finishFetch;
+  client.fetchInstallationToken = function delayedToken() {
+    fetchCount += 1;
+    return new Promise(function wait(resolve) { finishFetch = resolve; });
+  };
+  const tokenRequests = [client.installationToken(), client.installationToken(), client.installationToken()];
+  assert.strictEqual(fetchCount, 1, 'simultaneous token requests must share one refresh');
+  finishFetch({ token: 'shared-token', expiresAt: Date.now() + (10 * 60 * 1000) });
+  assert.deepStrictEqual(await Promise.all(tokenRequests), ['shared-token', 'shared-token', 'shared-token']);
+
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const scheduled = [];
+  for (let index = 0; index < 30; index += 1) {
+    scheduled.push(client.withApiRequestSlot(function boundedRequest() {
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      return new Promise(function finishOnNextTurn(resolve) {
+        setImmediate(function finish() {
+          activeRequests -= 1;
+          resolve();
+        });
+      });
+    }));
+  }
+  await Promise.all(scheduled);
+  assert(maximumActiveRequests <= 8, 'GitHub API requests must use a bounded concurrency queue');
+
+  const priorityClient = new githubModule.GitHubClient({});
+  priorityClient.activeApiRequests = 8;
+  const dispatchOrder = [];
+  const normalQueued = priorityClient.withApiRequestSlot(function normalOperation() {
+    dispatchOrder.push('normal');
+  });
+  const priorityQueued = priorityClient.withApiRequestSlot(function priorityOperation() {
+    dispatchOrder.push('priority');
+  }, { priority: true });
+  priorityClient.activeApiRequests = 7;
+  priorityClient.dispatchApiQueue();
+  await Promise.all([normalQueued, priorityQueued]);
+  assert.deepStrictEqual(dispatchOrder, ['priority', 'normal'],
+    'revocation prerequisites must dispatch before ordinary queued GitHub requests');
+
+  const minuteBudgetClient = new githubModule.GitHubClient({});
+  const budgetTime = Date.now();
+  for (let index = 0; index < 50; index += 1) {
+    assert.strictEqual(minuteBudgetClient.takeWriteRequestBudget(budgetTime), true);
+  }
+  assert.strictEqual(minuteBudgetClient.takeWriteRequestBudget(budgetTime), false,
+    'ordinary GitHub writes must leave a per-minute reserve for revocations');
+  for (let index = 0; index < 10; index += 1) {
+    assert.strictEqual(minuteBudgetClient.takeWriteRequestBudget(budgetTime, true), true);
+  }
+  assert.strictEqual(minuteBudgetClient.takeWriteRequestBudget(budgetTime, true), false,
+    'revocations must still stay below the overall per-minute safety budget');
+
+  const hourBudgetClient = new githubModule.GitHubClient({});
+  hourBudgetClient.writeRequestTimes = Array(320).fill(budgetTime - (2 * 60 * 1000));
+  assert.strictEqual(hourBudgetClient.takeWriteRequestBudget(budgetTime), false,
+    'ordinary GitHub writes must leave an hourly reserve for revocations');
+  assert.strictEqual(hourBudgetClient.takeWriteRequestBudget(budgetTime, true), true,
+    'a collaborator revocation must remain available after ordinary writes exhaust their pool');
+  hourBudgetClient.writeRequestTimes = Array(400).fill(budgetTime - (2 * 60 * 1000));
+  assert.strictEqual(hourBudgetClient.takeWriteRequestBudget(budgetTime, true), false,
+    'revocations must still stay below the overall hourly safety budget');
+
+  const cooldownClient = new githubModule.GitHubClient({});
+  await expectError(cooldownClient.withApiRequestSlot(function limitedResponse() {
+    return Promise.resolve({
+      status: 429,
+      headers: { 'retry-after': '60' },
+      body: { message: 'You have exceeded a secondary rate limit.' }
+    });
+  }), 'github_rate_limited');
+  let requestRanDuringCooldown = false;
+  await expectError(cooldownClient.withApiRequestSlot(function shouldNotRun() {
+    requestRanDuringCooldown = true;
+  }), 'github_rate_limited');
+  assert.strictEqual(requestRanDuringCooldown, false,
+    'new GitHub requests must fail fast while GitHub has asked the service to pause');
+
+  const queuedCooldownClient = new githubModule.GitHubClient({});
+  queuedCooldownClient.activeApiRequests = 8;
+  const queuedRequest = queuedCooldownClient.withApiRequestSlot(function queuedOperation() {
+    throw new Error('A queued operation must not start during a rate-limit cooldown');
+  });
+  queuedCooldownClient.noteRateLimit({
+    status: 403,
+    headers: {},
+    body: { message: 'You have exceeded a secondary rate limit.' }
+  });
+  await expectError(queuedRequest, 'github_rate_limited');
+
+  const invitationClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  invitationClient.appRequest = async function invitationLimitResponse(requestPath) {
+    if (requestPath.indexOf('/memberships/') !== -1) {
+      return { status: 404, body: { message: 'Not Found' } };
+    }
+    return { status: 422, body: { message: 'Validation Failed' } };
+  };
+  await expectError(invitationClient.onboardUser({ login: 'limited-user', numericId: 42 }),
+    'organization_invitation_limited');
+}
+
+async function httpTests(testDirectory) {
+  const config = configModule.loadConfig({
+    nodeEnv: 'development',
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    sessionSecret: 'http-test-session-secret-with-more-than-24-characters',
+    adminPassword: 'local-admin',
+    dataFile: path.join(testDirectory, 'http.json'),
+    devFakeGithub: true
+  });
+  const store = new storeModule.JsonStore(config.dataFile);
+  const github = new githubModule.FakeGitHubClient(config);
+  const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
+  await store.init();
+  await service.createAssignment({
+    slug: 'hw0',
+    title: 'Homework 0',
+    template: 'cal-cs184-student/hw0-template',
+    repoPrefix: 'hw0',
+    maxTeamSize: '1',
+    status: 'open'
+  }, 'admin');
+
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use('/repo', createRouter({ config: config, store: store, github: github, service: service }));
+  const server = await new Promise(function listen(resolve) {
+    const started = app.listen(0, '127.0.0.1', function ready() { resolve(started); });
+  });
+  const jar = {};
+  try {
+    let response = await httpRequest(server, jar, '/repo/');
+    assert.strictEqual(response.status, 200);
+    assert(response.body.indexOf('Sign in with GitHub') !== -1);
+
+    response = await httpRequest(server, jar, '/repo/auth/dev?user=http-student');
+    assert.strictEqual(response.status, 302);
+    assert(jar.lastSetCookie.toLowerCase().indexOf('httponly') !== -1);
+    assert(jar.lastSetCookie.toLowerCase().indexOf('samesite=lax') !== -1);
+
+    response = await httpRequest(server, jar, '/repo/');
+    assert.strictEqual(response.status, 200);
+    assert(response.body.indexOf('Homework 0') !== -1);
+
+    response = await httpRequest(server, jar, '/repo/assignments/hw0');
+    assert.strictEqual(response.status, 200);
+    assert(response.body.indexOf('Create a team') !== -1);
+    assert.strictEqual(response.body.indexOf('Work individually'), -1);
+    assert.strictEqual(response.body.indexOf('/individual'), -1);
+    const csrf = csrfFrom(response.body);
+
+    response = await httpRequest(server, jar, '/repo/assignments/hw0/teams', {
+      method: 'POST',
+      body: encodeForm({ csrf: 'wrong-token', confirm: 'yes', teamName: 'HTTP Solo' })
+    });
+    assert.strictEqual(response.status, 403);
+
+    response = await httpRequest(server, jar, '/repo/assignments/hw0/teams', {
+      method: 'POST',
+      body: encodeForm({ csrf: csrf, confirm: 'yes', teamName: 'HTTP Solo' })
+    });
+    assert.strictEqual(response.status, 302);
+
+    response = await httpRequest(server, jar, '/repo/');
+    assert(response.body.indexOf('Open repository') !== -1);
+
+    response = await httpRequest(server, jar, '/repo/admin');
+    assert.strictEqual(response.status, 200);
+    const adminCsrf = csrfFrom(response.body);
+    response = await httpRequest(server, jar, '/repo/admin/login', {
+      method: 'POST',
+      body: encodeForm({ csrf: adminCsrf, password: 'local-admin' })
+    });
+    assert.strictEqual(response.status, 302);
+    response = await httpRequest(server, jar, '/repo/admin');
+    assert.strictEqual(response.status, 200);
+    assert(response.body.indexOf('Add assignment') !== -1);
+
+    response = await httpRequest(server, jar, '/repo/health');
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, service: 'repo184' });
+    const originalSnapshot = store.snapshot.bind(store);
+    store.snapshot = function healthMustNotCloneState() {
+      throw new Error('health route attempted to clone the full data store');
+    };
+    response = await httpRequest(server, jar, '/repo/health');
+    assert.strictEqual(response.status, 200, 'health checks must use constant-size readiness state');
+    store.snapshot = originalSnapshot;
+  } finally {
+    await new Promise(function close(resolve) { server.close(resolve); });
+  }
+}
+
+async function productionBoundaryTests(testDirectory) {
+  assert.throws(function invalidEnvironment() {
+    configModule.validateBaseConfig(configModule.loadConfig({ nodeEnv: 'prod' }));
+  }, /NODE_ENV must be exactly/);
+  const keyPair = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+  });
+  const config = configModule.loadConfig({
+    nodeEnv: 'production',
+    basePath: '/repo',
+    baseUrl: 'https://cs184.eecs.berkeley.edu/repo',
+    sessionSecret: 'production-boundary-test-session-secret-123456789',
+    adminPasswordHash: await util.hashPassword('local-admin'),
+    githubAppId: '1234',
+    githubClientId: 'Iv1.test',
+    githubClientSecret: 'test-client-secret',
+    githubInstallationId: '5678',
+    githubPrivateKey: keyPair.privateKey,
+    dataFile: path.join(testDirectory, 'production-http.json'),
+    devFakeGithub: false
+  });
+  configModule.validateBaseConfig(config);
+  const store = new storeModule.JsonStore(config.dataFile);
+  const github = new githubModule.FakeGitHubClient(config);
+  const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use('/repo', createRouter({ config: config, store: store, github: github, service: service }));
+  const server = await new Promise(function listen(resolve) {
+    const started = app.listen(0, '127.0.0.1', function ready() { resolve(started); });
+  });
+  const jar = {};
+  try {
+    let response = await httpRequest(server, jar, '/repo/health');
+    assert.strictEqual(response.status, 200, 'direct Unix-socket-style health checks must not require TLS headers');
+    assert.strictEqual(response.headers['set-cookie'], undefined, 'health checks should not create sessions');
+
+    response = await httpRequest(server, jar, '/repo/', {
+      headers: { 'X-Forwarded-Proto': 'https' }
+    });
+    assert.strictEqual(response.status, 200);
+    assert(jar.lastSetCookie.toLowerCase().indexOf('secure') !== -1,
+      'proxied production sessions must set Secure cookies');
+  } finally {
+    await new Promise(function close(resolve) { server.close(resolve); });
+  }
+}
+
+async function run() {
+  const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'repo184-test-'));
+  try {
+    await serviceTests(testDirectory);
+    singleInstanceTests(testDirectory);
+    attemptLimiterTests();
+    githubActionLimiterTests();
+    await githubTransportTests();
+    await httpTests(testDirectory);
+    await productionBoundaryTests(testDirectory);
+    console.log('Repo184 tests passed.');
+  } finally {
+    removeDirectory(testDirectory);
+  }
+}
+
+run().catch(function failed(error) {
+  console.error(error.stack || error);
+  process.exitCode = 1;
+});

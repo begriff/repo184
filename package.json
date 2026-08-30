@@ -1,0 +1,22 @@
+{
+  "name": "repo184",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private assignment repository provisioning for CS184/284A",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development DEV_FAKE_GITHUB=1 node src/server.js",
+    "hash-password": "node scripts/hash-password.js",
+    "test": "node test/run.js",
+    "check": "node scripts/check-node11-syntax.js"
+  },
+  "engines": {
+    "node": ">=11.4.0"
+  },
+  "dependencies": {
+    "client-sessions": "0.8.0",
+    "dotenv": "8.6.0",
+    "express": "4.22.2"
+  }
+}

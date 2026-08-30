@@ -200,6 +200,7 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 }
 
 .request-box, .repo-panel { margin-top: 18px; border-top: 1px solid #ccd3da; padding-top: 12px; }
+.repository-entry { margin-top: 12px; border-top: 1px dotted #ccd3da; padding-top: 4px; }
 .request-row { padding: 9px 0; border-top: 1px dotted #ccd3da; }
 .field-error { margin-top: 4px; color: #9b1c1c; font-size: 14px; }
 .danger-link { color: #9b1c1c; }

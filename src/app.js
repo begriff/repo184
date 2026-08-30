@@ -293,11 +293,18 @@ function createRouter(overrides) {
     const member = workUnit && workUnit.members.find(function matchingMember(item) {
       return item.userId === userId;
     });
-    return Boolean(workUnit && workUnit.repoStatus === 'ready' && !workUnit.repoError && member && member.accessStatus === 'ready');
+    const writeupReady = workUnit && (!workUnit.writeupEnabled ||
+      (workUnit.writeupRepoStatus === 'ready' && !workUnit.writeupRepoError &&
+        workUnit.writeupPagesStatus === 'ready' && !workUnit.writeupPagesError));
+    return Boolean(workUnit && workUnit.repoStatus === 'ready' && !workUnit.repoError &&
+      writeupReady && member && member.accessStatus === 'ready');
   }
 
   function allAccessReady(workUnit) {
-    return Boolean(workUnit && workUnit.repoStatus === 'ready' && !workUnit.repoError && workUnit.members.every(function ready(member) {
+    const writeupReady = workUnit && (!workUnit.writeupEnabled ||
+      (workUnit.writeupRepoStatus === 'ready' && !workUnit.writeupRepoError &&
+        workUnit.writeupPagesStatus === 'ready' && !workUnit.writeupPagesError));
+    return Boolean(workUnit && workUnit.repoStatus === 'ready' && !workUnit.repoError && writeupReady && workUnit.members.every(function ready(member) {
       return member.accessStatus === 'ready';
     }));
   }
@@ -454,11 +461,14 @@ function createRouter(overrides) {
 
   router.post('/assignments/:slug/teams', requireCsrf, requireUser, requireGithubActionAllowance, asyncRoute(async function createTeam(req, res) {
     const workUnit = await service.createWorkUnit(req.params.slug, req.currentUser.id, req.body.teamName);
+    const repositoryDescription = workUnit.writeupEnabled
+      ? 'private code and public write-up repositories'
+      : 'private repository';
     setFlash(req, accessReady(workUnit, req.currentUser.id) ? 'success' : (workUnit.repoStatus === 'ready' ? 'info' : 'error'),
       accessReady(workUnit, req.currentUser.id)
-        ? 'Your team and private repository are ready.'
+        ? 'Your team and ' + repositoryDescription + ' are ready.'
         : (workUnit.repoStatus === 'ready'
-          ? 'Your team repository was created, but GitHub access is still pending or needs a retry.'
+          ? 'Your team was created, but GitHub repository or Pages setup is still pending or needs a retry.'
           : 'Your team was saved, but GitHub setup needs a retry.'));
     return res.redirect(config.basePath + '/assignments/' + encodeURIComponent(req.params.slug) + '/teams/' + encodeURIComponent(workUnit.id));
   }));

@@ -582,6 +582,51 @@ class GitHubClient {
     return response.body;
   }
 
+  async generateWriteupRepository(assignment, repoName, marker) {
+    const response = await this.appRequest(
+      '/repos/' + encodeURIComponent(assignment.writeupTemplateOwner) + '/' + encodeURIComponent(assignment.writeupTemplateRepo) + '/generate',
+      'POST',
+      {
+        owner: this.config.githubOrg,
+        name: repoName,
+        description: marker,
+        include_all_branches: false,
+        private: false
+      }
+    );
+    requireSuccess(response, 201, 'create the public write-up repository');
+    if (response.body.private) {
+      throw new GitHubError('GitHub returned a write-up repository that is not public', 502, response.body);
+    }
+    return response.body;
+  }
+
+  async ensurePages(repoName, branch) {
+    const endpoint = '/repos/' + encodeURIComponent(this.config.githubOrg) + '/' + encodeURIComponent(repoName) + '/pages';
+    let response = await this.appRequest(endpoint, 'GET');
+    if (response.status === 404) {
+      response = await this.appRequest(endpoint, 'POST', {
+        source: {
+          branch: branch || 'main',
+          path: '/docs'
+        }
+      });
+      requireSuccess(response, [201, 409], 'enable GitHub Pages for the write-up repository');
+      if (response.status === 409) {
+        response = await this.appRequest(endpoint, 'GET');
+        requireSuccess(response, 200, 'read GitHub Pages configuration');
+      }
+    } else {
+      requireSuccess(response, 200, 'read GitHub Pages configuration');
+    }
+    return {
+      htmlUrl: response.body && response.body.html_url
+        ? response.body.html_url
+        : 'https://' + this.config.githubOrg.toLowerCase() + '.github.io/' + repoName + '/',
+      source: response.body && response.body.source ? response.body.source : { branch: branch || 'main', path: '/docs' }
+    };
+  }
+
   async addCollaborator(repoName, login) {
     const response = await this.appRequest(
       '/repos/' + encodeURIComponent(this.config.githubOrg) + '/' + encodeURIComponent(repoName) + '/collaborators/' + encodeURIComponent(login),
@@ -727,7 +772,8 @@ class FakeGitHubClient {
         id: this.nextTemplateId,
         full_name: owner + '/' + repo,
         is_template: true,
-        private: true
+        private: true,
+        default_branch: 'main'
       };
     }
     return Object.assign({}, this.templates[key]);
@@ -740,7 +786,8 @@ class FakeGitHubClient {
       id: this.nextTemplateId,
       full_name: owner + '/' + repo,
       is_template: true,
-      private: true
+      private: true,
+      default_branch: 'main'
     };
     return Object.assign({}, this.templates[key]);
   }
@@ -761,6 +808,7 @@ class FakeGitHubClient {
       full_name: this.config.githubOrg + '/' + repoName,
       private: true,
       description: marker,
+      default_branch: 'main',
       html_url: 'https://github.com/' + this.config.githubOrg + '/' + repoName,
       clone_url: 'https://github.com/' + this.config.githubOrg + '/' + repoName + '.git',
       ssh_url: 'git@github.com:' + this.config.githubOrg + '/' + repoName + '.git'
@@ -770,6 +818,42 @@ class FakeGitHubClient {
     }
     this.repositories[repoName] = repository;
     return repository;
+  }
+
+  async generateWriteupRepository(assignment, repoName, marker) {
+    if (this.repositories[repoName]) {
+      throw new GitHubError('Repository already exists', 422);
+    }
+    const templateKey = String(assignment.writeupTemplateOwner + '/' + assignment.writeupTemplateRepo).toLowerCase();
+    const template = this.templates[templateKey];
+    const repository = {
+      id: Object.keys(this.repositories).length + 1,
+      name: repoName,
+      full_name: this.config.githubOrg + '/' + repoName,
+      private: false,
+      description: marker,
+      default_branch: 'main',
+      html_url: 'https://github.com/' + this.config.githubOrg + '/' + repoName,
+      clone_url: 'https://github.com/' + this.config.githubOrg + '/' + repoName + '.git',
+      ssh_url: 'git@github.com:' + this.config.githubOrg + '/' + repoName + '.git'
+    };
+    if (template) {
+      repository.template_repository = { id: template.id, full_name: template.full_name };
+    }
+    this.repositories[repoName] = repository;
+    return repository;
+  }
+
+  async ensurePages(repoName, branch) {
+    const repository = this.repositories[repoName];
+    if (!repository) {
+      throw new GitHubError('Fake repository not found', 404);
+    }
+    repository.pages = {
+      htmlUrl: 'https://' + this.config.githubOrg.toLowerCase() + '.github.io/' + repoName + '/',
+      source: { branch: branch || 'main', path: '/docs' }
+    };
+    return Object.assign({}, repository.pages);
   }
 
   async addCollaborator(repoName, login) {

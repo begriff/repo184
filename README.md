@@ -135,6 +135,7 @@ The separately installed App never receives a student user token. Give it only:
 | --- | --- | --- | --- |
 | Repository | Administration | Read and write | Create private repositories and manage collaborators |
 | Repository | Contents | Read-only | Read and generate from template repositories |
+| Repository | Pages | Read and write | Enable Pages for generated public write-up repositories |
 | Organization | Members | Read and write | Check membership and send organization invitations |
 
 Leave account and enterprise permissions and subscribed events unset. Disable
@@ -142,7 +143,7 @@ user authorization callbacks and webhooks. Generate and download a private key,
 then open **Install App**, install it on `cal-cs184-student`, and choose repository
 access. The provisioning App does not need a client secret for Repo184.
 
-Choose **Only select repositories** and select every private template
+Choose **Only select repositories** and select every private code and write-up template
 repository. GitHub automatically grants the creating app access to repositories
 it later creates, but staff must add each new private template to the
 installation before using it in Repo184. This is preferable here because every
@@ -207,6 +208,9 @@ can add new workflow files. If Actions are required, restrict the allowed
 actions, organization secrets, and self-hosted runner groups so generated
 student repositories cannot use shared secrets or runners by default.
 
+Under **Settings -> Member privileges -> Pages creation**, allow **Public**
+Pages sites. This is required for the optional public write-up repositories.
+
 ## 2. Prepare assignment templates
 
 For each homework template:
@@ -230,10 +234,25 @@ review. Generated repository names use `<repository-prefix>-<team-name>`. If
 that name is already managed by Repo184 or already exists on GitHub,
 provisioning stops with an error instead of choosing a different name.
 
+An assignment can optionally use a second, sanitized write-up template. When
+enabled, Repo184 also creates a public `<repository-prefix>-<team-name>-writeup`
+repository, grants the same students push access, and enables GitHub Pages from
+the `docs` directory on the generated repository's default branch. Put an
+`index.html` in that directory. If Actions are disabled for the organization,
+also put a `.nojekyll` file in `docs` so Pages can deploy the static files without
+the built-in Jekyll workflow. Never place solutions, starter code that should
+remain private, credentials, or other restricted course material in the write-up
+template because every generated write-up repository is public.
+
+The substring `writeup` is reserved: assignment repository prefixes and team
+names containing it are rejected so the companion suffix remains unambiguous.
+
 After deployment, sign in to `/repo/admin` and add the assignment's display
 name, slug, template `owner/repository`, destination repository prefix, maximum
-team size (`1` or `2`), and open/closed status. Create a test repository before
-publishing the assignment link.
+team size (`1` or `2`), and open/closed status. To generate write-up repositories,
+enable the checkbox and provide the separate write-up template. Create a test
+team and verify both repositories and the published Pages URL before publishing
+the assignment link.
 
 ## 3. Configure production secrets
 
@@ -381,12 +400,13 @@ from the operational JSON snapshots.
       URL; it has no repository, organization, or enterprise permissions and is
       not installed.
 - [ ] The Provisioning App has Repository Administration (write), Repository
-      Contents (read), and Organization Members (write), with no extras or user
-      authorization flow.
+      Contents (read), Repository Pages (write), and Organization Members
+      (write), with no extras or user authorization flow.
 - [ ] The Provisioning App is installed on `cal-cs184-student` and can access
       every private template.
 - [ ] Organization base permissions are none; repository creation is enabled
       for both members and GitHub Apps so the App can generate private repos.
+- [ ] Public Pages creation is allowed under organization member privileges.
 - [ ] Staff explicitly accept that a free organization cannot restrict active
       members to private-only repository creation, or have chosen Enterprise
       Cloud/redesigned outside-collaborator access instead.
@@ -395,6 +415,8 @@ from the operational JSON snapshots.
 - [ ] Staff have checked how many students still need organization invitations
       and have a stagger plan for invitation and API-write limits.
 - [ ] Each template is sanitized, marked as a template, and tested.
+- [ ] Each enabled write-up template contains `docs/index.html` and, when Actions
+      are disabled, `docs/.nojekyll`.
 - [ ] Staff understand that Repo184 pins each template's immutable repository
       ID; a renamed or replaced template must be deliberately reconfigured.
 - [ ] `.env` contains only production values, `DEV_FAKE_GITHUB=0`, an
@@ -405,6 +427,8 @@ from the operational JSON snapshots.
 - [ ] `nginx -t` passes and the public HTTPS health check succeeds.
 - [ ] A disposable GitHub account can sign in, become an active organization
       member, and receive push access to a newly generated **private** repo.
+- [ ] For an assignment with write-ups enabled, a test team receives access to
+      the public companion repo and its Pages URL publishes successfully.
 - [ ] A two-person test verifies request, approval, duplicate-membership
       prevention, and the configured team-size limit.
 - [ ] Staff acknowledge that GitHub login is not enrollment verification and

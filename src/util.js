@@ -57,6 +57,9 @@ function validateAssignmentInput(input) {
   const title = String(input.title || '').trim();
   const template = parseTemplate(input.template);
   const repoPrefix = slugify(input.repoPrefix || slug);
+  const generateWriteupRepo = input.generateWriteupRepo === true ||
+    input.generateWriteupRepo === '1' || input.generateWriteupRepo === 'on';
+  const writeupTemplate = generateWriteupRepo ? parseTemplate(input.writeupTemplate) : null;
   const maxTeamSize = Number(input.maxTeamSize);
   const status = input.status === 'open' ? 'open' : 'closed';
 
@@ -69,6 +72,12 @@ function validateAssignmentInput(input) {
   if (!repoPrefix || repoPrefix.length > 48) {
     throw new AppError('Repository prefix is required and must be at most 48 characters', 400);
   }
+  if (repoPrefix.indexOf('writeup') !== -1) {
+    throw new AppError('Repository prefix cannot contain "writeup" because that suffix is reserved for write-up repositories', 400, 'reserved_repository_prefix');
+  }
+  if (writeupTemplate && writeupTemplate.fullName.toLowerCase() === template.fullName.toLowerCase()) {
+    throw new AppError('The write-up template must be a separate sanitized repository because generated write-up repositories are public', 400, 'writeup_template_must_be_separate');
+  }
   if (maxTeamSize !== 1 && maxTeamSize !== 2) {
     throw new AppError('Maximum team size must be 1 or 2', 400);
   }
@@ -79,6 +88,10 @@ function validateAssignmentInput(input) {
     templateOwner: template.owner,
     templateRepo: template.repo,
     templateFullName: template.fullName,
+    generateWriteupRepo: generateWriteupRepo,
+    writeupTemplateOwner: writeupTemplate ? writeupTemplate.owner : '',
+    writeupTemplateRepo: writeupTemplate ? writeupTemplate.repo : '',
+    writeupTemplateFullName: writeupTemplate ? writeupTemplate.fullName : '',
     repoPrefix: repoPrefix,
     maxTeamSize: maxTeamSize,
     status: status

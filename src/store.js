@@ -37,6 +37,44 @@ function migrateIndividualWorkUnits(state) {
   return changed;
 }
 
+function migrateWriteupRepositories(state) {
+  if (!state || !Array.isArray(state.assignments) || !Array.isArray(state.workUnits)) {
+    return false;
+  }
+  let changed = false;
+  state.assignments.forEach(function migrateAssignment(assignment) {
+    if (assignment.generateWriteupRepo === undefined) {
+      assignment.generateWriteupRepo = false;
+      assignment.writeupTemplateOwner = '';
+      assignment.writeupTemplateRepo = '';
+      assignment.writeupTemplateFullName = '';
+      assignment.writeupTemplateRepoId = null;
+      changed = true;
+    }
+  });
+  state.workUnits.forEach(function migrateWorkUnit(workUnit) {
+    if (workUnit.writeupEnabled !== undefined) {
+      return;
+    }
+    workUnit.writeupEnabled = false;
+    workUnit.writeupRepoName = '';
+    workUnit.writeupRepoMarker = '';
+    workUnit.writeupRepoId = null;
+    workUnit.writeupRepoHtmlUrl = '';
+    workUnit.writeupRepoCloneUrl = '';
+    workUnit.writeupRepoSshUrl = '';
+    workUnit.writeupTemplateProvenance = 'disabled';
+    workUnit.writeupTemplateSourceRepoId = null;
+    workUnit.writeupRepoStatus = 'disabled';
+    workUnit.writeupRepoError = '';
+    workUnit.writeupPagesUrl = '';
+    workUnit.writeupPagesStatus = 'disabled';
+    workUnit.writeupPagesError = '';
+    changed = true;
+  });
+  return changed;
+}
+
 function validateState(state) {
   if (!state || state.version !== 1 || !Array.isArray(state.assignments) ||
       !state.users || !Array.isArray(state.workUnits) || !Array.isArray(state.audit)) {
@@ -48,6 +86,10 @@ function validateState(state) {
   state.assignments.forEach(function eachAssignment(assignment) {
     if (assignment.templateRepoId === undefined || assignment.templateRepoId === null) {
       throw new Error('Assignment is missing its immutable template repository ID');
+    }
+    if (assignment.generateWriteupRepo &&
+        (!assignment.writeupTemplateFullName || assignment.writeupTemplateRepoId === undefined || assignment.writeupTemplateRepoId === null)) {
+      throw new Error('Assignment is missing its immutable write-up template repository ID');
     }
     if (assignmentIds[assignment.id] || assignmentSlugs[assignment.slug] || repoPrefixes[assignment.repoPrefix]) {
       throw new Error('Duplicate assignment id, slug, or repository prefix in data store');
@@ -78,6 +120,23 @@ function validateState(state) {
       throw new Error('Duplicate repository name in data store');
     }
     repoNames[workUnit.repoName] = true;
+    if (workUnit.writeupEnabled) {
+      if (!assignment.generateWriteupRepo || !workUnit.writeupRepoName || !workUnit.writeupRepoMarker) {
+        throw new Error('Work unit has invalid write-up repository configuration');
+      }
+      if (repoNames[workUnit.writeupRepoName]) {
+        throw new Error('Duplicate repository name in data store');
+      }
+      repoNames[workUnit.writeupRepoName] = true;
+      if (['not_generated', 'verified', 'mismatch'].indexOf(workUnit.writeupTemplateProvenance) === -1 ||
+          ['provisioning', 'ready', 'error'].indexOf(workUnit.writeupRepoStatus) === -1 ||
+          ['pending', 'ready', 'error'].indexOf(workUnit.writeupPagesStatus) === -1) {
+        throw new Error('Work unit has an unsupported write-up repository state');
+      }
+    } else if (workUnit.writeupRepoStatus !== 'disabled' || workUnit.writeupPagesStatus !== 'disabled' ||
+        workUnit.writeupTemplateProvenance !== 'disabled') {
+      throw new Error('Disabled write-up repository has an unsupported state');
+    }
 
     if (!Array.isArray(workUnit.members) || !workUnit.members.length || !Array.isArray(workUnit.requests) || workUnit.requests.length > 500) {
       throw new Error('Work unit has invalid members or requests');
@@ -163,7 +222,9 @@ class JsonStore {
     try {
       const contents = await promises.readFile(this.filePath, 'utf8');
       this.state = JSON.parse(contents);
-      const migrated = migrateIndividualWorkUnits(this.state);
+      const migratedIndividuals = migrateIndividualWorkUnits(this.state);
+      const migratedWriteups = migrateWriteupRepositories(this.state);
+      const migrated = migratedIndividuals || migratedWriteups;
       validateState(this.state);
       if (migrated) {
         await this.writeState(this.state);

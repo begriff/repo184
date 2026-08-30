@@ -132,11 +132,43 @@ async function serviceTests(testDirectory) {
     slug: 'hw1',
     title: 'Homework 1',
     template: 'cal-cs184-student/hw1-template',
+    generateWriteupRepo: '1',
+    writeupTemplate: 'cal-cs184-student/hw1-writeup-template',
     repoPrefix: 'hw1',
     maxTeamSize: '2',
     status: 'open'
   }, 'admin');
   assert.strictEqual(assignment.maxTeamSize, 2);
+  assert.strictEqual(assignment.generateWriteupRepo, true);
+  assert.notStrictEqual(assignment.writeupTemplateRepoId, null);
+
+  await expectError(service.createAssignment({
+    slug: 'reserved-prefix',
+    title: 'Reserved prefix',
+    template: 'cal-cs184-student/reserved-template',
+    repoPrefix: 'hw-writeup',
+    maxTeamSize: '1',
+    status: 'closed'
+  }, 'admin'), 'reserved_repository_prefix');
+  await expectError(service.createAssignment({
+    slug: 'missing-writeup-template',
+    title: 'Missing write-up template',
+    template: 'cal-cs184-student/missing-template',
+    generateWriteupRepo: '1',
+    repoPrefix: 'missing',
+    maxTeamSize: '1',
+    status: 'closed'
+  }, 'admin'), 'invalid_template');
+  await expectError(service.createAssignment({
+    slug: 'shared-template',
+    title: 'Unsafe shared template',
+    template: 'cal-cs184-student/shared-template',
+    generateWriteupRepo: '1',
+    writeupTemplate: 'CAL-CS184-STUDENT/shared-template',
+    repoPrefix: 'shared',
+    maxTeamSize: '1',
+    status: 'closed'
+  }, 'admin'), 'writeup_template_must_be_separate');
 
   const team = await service.createWorkUnit('hw1', alice.id, 'Ray Tracers');
   assert.strictEqual(team.repoStatus, 'ready');
@@ -144,6 +176,12 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(team.members[0].accessStatus, 'ready');
   assert.strictEqual(github.repositories[team.repoName].private, true);
   assert.strictEqual(team.repoName, 'hw1-ray-tracers');
+  assert.strictEqual(team.writeupRepoStatus, 'ready');
+  assert.strictEqual(team.writeupRepoName, 'hw1-ray-tracers-writeup');
+  assert.strictEqual(github.repositories[team.writeupRepoName].private, false);
+  assert.strictEqual(team.writeupPagesStatus, 'ready');
+  assert.strictEqual(team.writeupPagesUrl, 'https://cal-cs184-student.github.io/hw1-ray-tracers-writeup/');
+  assert.strictEqual(Boolean(github.repositories[team.writeupRepoName].collaborators['alice-184']), true);
 
   let uncertainGrantCleanupCount = 0;
   const initialRemoveCollaborator = github.removeCollaborator.bind(github);
@@ -156,8 +194,8 @@ async function serviceTests(testDirectory) {
     unit.members[0].accessStatus = 'granting';
   });
   await service.syncMemberAccess(team.id, alice.id);
-  assert.strictEqual(uncertainGrantCleanupCount, 1,
-    'retrying an uncertain grant must revoke any collaborator or invitation before re-granting');
+  assert.strictEqual(uncertainGrantCleanupCount, 2,
+    'retrying an uncertain grant must revoke code and write-up access before re-granting');
   assert.strictEqual((await service.getWorkUnit(team.id)).members[0].accessStatus, 'ready');
   github.removeCollaborator = initialRemoveCollaborator;
 
@@ -168,6 +206,7 @@ async function serviceTests(testDirectory) {
   const renamedAlice = await service.getUser(alice.id);
   assert.strictEqual(renamedAlice.login, 'alice-renamed', 'current login must be resolved from the immutable account ID');
   assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['alice-renamed']), true);
+  assert.strictEqual(Boolean(github.repositories[team.writeupRepoName].collaborators['alice-renamed']), true);
   assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['alice-184']), false,
     'access must not be granted to a replacement account that claimed an old username');
   const correctAliceMembership = github.memberships['alice-renamed'];
@@ -178,6 +217,7 @@ async function serviceTests(testDirectory) {
 
   const sameTeam = await service.createWorkUnit('hw1', alice.id, 'Ray Tracers');
   assert.strictEqual(sameTeam.id, team.id, 'repeat creation must be idempotent');
+  await expectError(service.renameTeam(team.id, 'Writeup Makers', 'admin'), 'reserved_team_name');
   const renamedTeam = await service.renameTeam(team.id, 'Ray Makers', 'admin');
   assert.strictEqual(renamedTeam.teamSlug, 'ray-makers', 'team-name uniqueness must follow staff renames');
 
@@ -186,8 +226,10 @@ async function serviceTests(testDirectory) {
   const paired = await service.resolveJoinRequest(bobRequest.id, alice.id, 'approve', false);
   assert.strictEqual(paired.members.length, 2);
   assert.strictEqual(paired.members[1].accessStatus, 'ready');
+  assert.strictEqual(Boolean(github.repositories[team.writeupRepoName].collaborators['bob-184']), true);
   await expectError(service.requestToJoin('hw1', team.id, carol.id), 'team_full');
 
+  await expectError(service.createWorkUnit('hw1', carol.id, 'Writeup Crew'), 'reserved_team_name');
   const carolTeam = await service.createWorkUnit('hw1', carol.id, 'Carol Solo');
   assert.strictEqual(carolTeam.kind, 'team');
   assert.strictEqual(carolTeam.members.length, 1);
@@ -205,6 +247,7 @@ async function serviceTests(testDirectory) {
   const releasedCarol = await service.releaseWorkUnit(carolTeam.id, 'admin');
   assert.strictEqual(releasedCarol.lifecycle, 'released');
   assert.strictEqual(Boolean(carolRepository.collaborators['carol-184']), false);
+  assert.strictEqual(Boolean(github.repositories[carolTeam.writeupRepoName].collaborators['carol-184']), false);
   assert.strictEqual(releasedCarol.repoStatus, 'error');
   assert(releasedCarol.repoError.indexOf('public') !== -1,
     'release must keep public-visibility drift prominently flagged after revocation');
@@ -222,6 +265,8 @@ async function serviceTests(testDirectory) {
     'member removal must revoke the current account after a username change');
   assert.strictEqual(Boolean(github.repositories[team.repoName].collaborators['bob-184']), false,
     'member removal must not target the replacement owner of an old username');
+  assert.strictEqual(Boolean(github.repositories[team.writeupRepoName].collaborators['bob-renamed']), false,
+    'member removal must also revoke write-up repository access');
   github.repositories[team.repoName].private = true;
   const repairedTeam = await service.provisionWorkUnit(team.id);
   assert.strictEqual(repairedTeam.repoStatus, 'ready');
@@ -238,6 +283,7 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(bobSoloTeam.members.length, 1);
   const released = await service.releaseWorkUnit(bobSoloTeam.id, 'admin');
   assert.strictEqual(released.lifecycle, 'released');
+  assert.strictEqual(Boolean(github.repositories[bobSoloTeam.writeupRepoName].collaborators['bob-renamed']), false);
   await expectError(service.createWorkUnit('hw1', bob.id, 'Bob Solo'), 'repository_name_taken');
   const bobReplacement = await service.createWorkUnit('hw1', bob.id, 'Bob Replacement');
   assert.notStrictEqual(bobReplacement.id, bobSoloTeam.id);
@@ -323,6 +369,8 @@ async function serviceTests(testDirectory) {
     slug: 'hw1',
     title: 'Homework 1',
     template: 'cal-cs184-student/hw1-template',
+    generateWriteupRepo: '1',
+    writeupTemplate: 'cal-cs184-student/hw1-writeup-template',
     repoPrefix: 'hw1',
     maxTeamSize: '1',
     status: 'open'
@@ -430,6 +478,20 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(snapshot.workUnits.length, 7);
 
   const legacyState = util.clone(snapshot);
+  legacyState.assignments.forEach(function removeWriteupAssignmentFields(item) {
+    delete item.generateWriteupRepo;
+    delete item.writeupTemplateOwner;
+    delete item.writeupTemplateRepo;
+    delete item.writeupTemplateFullName;
+    delete item.writeupTemplateRepoId;
+  });
+  legacyState.workUnits.forEach(function removeWriteupWorkUnitFields(item) {
+    Object.keys(item).filter(function writeupField(key) {
+      return key.indexOf('writeup') === 0;
+    }).forEach(function remove(key) {
+      delete item[key];
+    });
+  });
   const legacyUnit = legacyState.workUnits.find(function oneMember(item) { return item.members.length === 1; });
   const legacyUser = legacyState.users[legacyUnit.members[0].userId];
   legacyUnit.kind = 'individual';
@@ -445,6 +507,8 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(migratedUnit.displayName, legacyUser.login);
   assert(migratedUnit.teamSlug);
   assert(migratedUnit.joinCode);
+  assert.strictEqual(migratedSnapshot.assignments[0].generateWriteupRepo, false);
+  assert.strictEqual(migratedUnit.writeupRepoStatus, 'disabled');
 }
 
 function singleInstanceTests(testDirectory) {
@@ -686,6 +750,20 @@ async function githubTransportTests() {
   const sentMembership = await sendClient.sendInvitation({ login: 'send-user', numericId: 44 });
   assert.strictEqual(sentMembership.state, 'pending');
   assert.deepStrictEqual(sendCalls.map(function method(call) { return call.method; }), ['GET', 'GET', 'POST']);
+
+  const pagesClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  const pagesCalls = [];
+  pagesClient.appRequest = async function pagesRequest(requestPath, method, body) {
+    pagesCalls.push({ path: requestPath, method: method, body: body });
+    if (method === 'GET') {
+      return { status: 404, body: { message: 'Not Found' } };
+    }
+    return { status: 201, body: { html_url: 'https://cal-cs184-student.github.io/hw1-team-writeup/' } };
+  };
+  const pages = await pagesClient.ensurePages('hw1-team-writeup', 'main');
+  assert.strictEqual(pages.htmlUrl, 'https://cal-cs184-student.github.io/hw1-team-writeup/');
+  assert.deepStrictEqual(pagesCalls.map(function method(call) { return call.method; }), ['GET', 'POST']);
+  assert.deepStrictEqual(pagesCalls[1].body, { source: { branch: 'main', path: '/docs' } });
 }
 
 async function httpTests(testDirectory) {
@@ -757,7 +835,7 @@ async function httpTests(testDirectory) {
     assert.strictEqual(response.status, 302);
 
     response = await httpRequest(server, jar, '/repo/');
-    assert(response.body.indexOf('Open repository') !== -1);
+    assert(response.body.indexOf('Open code repository') !== -1);
 
     response = await httpRequest(server, jar, '/repo/admin');
     assert.strictEqual(response.status, 200);
@@ -770,6 +848,7 @@ async function httpTests(testDirectory) {
     response = await httpRequest(server, jar, '/repo/admin');
     assert.strictEqual(response.status, 200);
     assert(response.body.indexOf('Add assignment') !== -1);
+    assert(response.body.indexOf('Generate a public write-up repository') !== -1);
 
     response = await httpRequest(server, jar, '/repo/health');
     assert.strictEqual(response.status, 200);

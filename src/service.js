@@ -69,6 +69,17 @@ function repositoryVerificationFailed(error) {
   ].indexOf(error.code) !== -1);
 }
 
+function writeupRepositoryVerificationFailed(error) {
+  return Boolean(error && [
+    'writeup_repository_collision',
+    'writeup_repository_identity_mismatch',
+    'writeup_repository_missing',
+    'writeup_repository_not_public',
+    'writeup_template_identity_mismatch',
+    'writeup_template_provenance_mismatch'
+  ].indexOf(error.code) !== -1);
+}
+
 function repoFields(repository) {
   return {
     repoId: repository.id,
@@ -76,6 +87,19 @@ function repoFields(repository) {
     repoCloneUrl: repository.clone_url,
     repoSshUrl: repository.ssh_url
   };
+}
+
+function writeupRepoFields(repository) {
+  return {
+    writeupRepoId: repository.id,
+    writeupRepoHtmlUrl: repository.html_url,
+    writeupRepoCloneUrl: repository.clone_url,
+    writeupRepoSshUrl: repository.ssh_url
+  };
+}
+
+function hasReservedWriteupName(value) {
+  return String(value || '').toLowerCase().indexOf('writeup') !== -1;
 }
 
 function enrichWorkUnit(state, workUnit) {
@@ -295,6 +319,23 @@ class Repo184Service {
     return repository;
   }
 
+  async verifyManagedWriteupRepository(workUnit, priority) {
+    const repository = await this.github.getRepository(workUnit.writeupRepoName, priority);
+    if (!repository) {
+      throw new util.AppError('The managed write-up repository no longer exists. Staff must investigate before changing access.', 409, 'writeup_repository_missing');
+    }
+    if (workUnit.writeupRepoId !== null && String(repository.id) !== String(workUnit.writeupRepoId)) {
+      throw new util.AppError('A different GitHub repository now uses this managed write-up name. Access was not changed.', 409, 'writeup_repository_identity_mismatch');
+    }
+    if (workUnit.writeupRepoId === null && (repository.private || repository.description !== workUnit.writeupRepoMarker)) {
+      throw new util.AppError('A repository with this write-up name was not created by this Repo184 record. Access was not changed.', 409, 'writeup_repository_collision');
+    }
+    if (repository.private) {
+      throw new util.AppError('The managed write-up repository is not public. Staff intervention is required.', 409, 'writeup_repository_not_public');
+    }
+    return repository;
+  }
+
   async verifyAssignmentTemplate(assignment) {
     const template = await this.github.validateTemplate(
       assignment.templateOwner,
@@ -310,10 +351,33 @@ class Repo184Service {
     return template;
   }
 
+  async verifyAssignmentWriteupTemplate(assignment) {
+    const template = await this.github.validateTemplate(
+      assignment.writeupTemplateOwner,
+      assignment.writeupTemplateRepo
+    );
+    if (!template || String(template.id) !== String(assignment.writeupTemplateRepoId)) {
+      throw new util.AppError(
+        'The write-up template name now points to a different GitHub repository. Staff must restore or reconfigure the template before provisioning.',
+        409,
+        'writeup_template_identity_mismatch'
+      );
+    }
+    return template;
+  }
+
   async createAssignment(input, actor) {
     const assignmentInput = util.validateAssignmentInput(input);
     const template = await this.github.validateTemplate(assignmentInput.templateOwner, assignmentInput.templateRepo);
     assignmentInput.templateRepoId = template.id;
+    assignmentInput.writeupTemplateRepoId = null;
+    if (assignmentInput.generateWriteupRepo) {
+      const writeupTemplate = await this.github.validateTemplate(
+        assignmentInput.writeupTemplateOwner,
+        assignmentInput.writeupTemplateRepo
+      );
+      assignmentInput.writeupTemplateRepoId = writeupTemplate.id;
+    }
     return this.store.transaction(function create(state) {
       if (findAssignment(state, assignmentInput.slug)) {
         throw new util.AppError('An assignment with that slug already exists.', 409, 'assignment_exists');
@@ -352,16 +416,30 @@ class Repo184Service {
     });
     const immutableChanged = beforeAssignment.slug !== assignmentInput.slug ||
       beforeAssignment.templateFullName !== assignmentInput.templateFullName ||
+      beforeAssignment.generateWriteupRepo !== assignmentInput.generateWriteupRepo ||
+      beforeAssignment.writeupTemplateFullName !== assignmentInput.writeupTemplateFullName ||
       beforeAssignment.repoPrefix !== assignmentInput.repoPrefix ||
       beforeAssignment.maxTeamSize !== assignmentInput.maxTeamSize;
     if (assignmentLocked && immutableChanged) {
-      throw new util.AppError('Slug, template, repository prefix, and team size are locked while an active claim or managed repository exists. Title and open/closed status can still be changed.', 409, 'assignment_locked');
+      throw new util.AppError('Slug, templates, write-up repository setting, repository prefix, and team size are locked while an active claim or managed repository exists. Title and open/closed status can still be changed.', 409, 'assignment_locked');
     }
     assignmentInput.templateRepoId = beforeAssignment.templateRepoId;
     if (beforeAssignment.templateFullName !== assignmentInput.templateFullName ||
         beforeAssignment.templateRepoId === undefined || beforeAssignment.templateRepoId === null) {
       const template = await this.github.validateTemplate(assignmentInput.templateOwner, assignmentInput.templateRepo);
       assignmentInput.templateRepoId = template.id;
+    }
+    assignmentInput.writeupTemplateRepoId = beforeAssignment.writeupTemplateRepoId;
+    if (!assignmentInput.generateWriteupRepo) {
+      assignmentInput.writeupTemplateRepoId = null;
+    } else if (!beforeAssignment.generateWriteupRepo ||
+        beforeAssignment.writeupTemplateFullName !== assignmentInput.writeupTemplateFullName ||
+        beforeAssignment.writeupTemplateRepoId === undefined || beforeAssignment.writeupTemplateRepoId === null) {
+      const writeupTemplate = await this.github.validateTemplate(
+        assignmentInput.writeupTemplateOwner,
+        assignmentInput.writeupTemplateRepo
+      );
+      assignmentInput.writeupTemplateRepoId = writeupTemplate.id;
     }
     return this.store.transaction(function update(state) {
       const assignment = findAssignment(state, assignmentId);
@@ -384,9 +462,11 @@ class Repo184Service {
       });
       if (locksIdentity && (assignment.slug !== assignmentInput.slug ||
           assignment.templateFullName !== assignmentInput.templateFullName ||
+          assignment.generateWriteupRepo !== assignmentInput.generateWriteupRepo ||
+          assignment.writeupTemplateFullName !== assignmentInput.writeupTemplateFullName ||
           assignment.repoPrefix !== assignmentInput.repoPrefix ||
           assignment.maxTeamSize !== assignmentInput.maxTeamSize)) {
-        throw new util.AppError('Slug, template, repository prefix, and team size are locked while an active claim or managed repository exists.', 409, 'assignment_locked');
+        throw new util.AppError('Slug, templates, write-up repository setting, repository prefix, and team size are locked while an active claim or managed repository exists.', 409, 'assignment_locked');
       }
       Object.assign(assignment, assignmentInput, { updatedAt: util.nowIso() });
       addAudit(state, actor, 'assignment.updated', {
@@ -432,6 +512,9 @@ class Repo184Service {
       if (displayName.length < 2 || displayName.length > 40 || !nameSlug) {
         throw new util.AppError('Team name must be between 2 and 40 characters.', 400, 'invalid_team_name');
       }
+      if (hasReservedWriteupName(displayName) || hasReservedWriteupName(nameSlug)) {
+        throw new util.AppError('Team name cannot contain "writeup" because that suffix is reserved for write-up repositories.', 400, 'reserved_team_name');
+      }
       const nameTaken = state.workUnits.some(function duplicateTeam(workUnit) {
         return isActiveWorkUnit(workUnit) && workUnit.assignmentId === assignment.id &&
           workUnit.kind === 'team' && workUnit.teamSlug === nameSlug;
@@ -442,7 +525,11 @@ class Repo184Service {
 
       const id = util.randomId('work');
       const repoName = assignment.repoPrefix + '-' + nameSlug;
-      if (state.workUnits.some(function duplicateRepo(workUnit) { return workUnit.repoName === repoName; })) {
+      const writeupRepoName = assignment.generateWriteupRepo ? repoName + '-writeup' : '';
+      if (state.workUnits.some(function duplicateRepo(workUnit) {
+        return workUnit.repoName === repoName || workUnit.writeupRepoName === repoName ||
+          (writeupRepoName && (workUnit.repoName === writeupRepoName || workUnit.writeupRepoName === writeupRepoName));
+      })) {
         throw new util.AppError(
           'That repository name is already managed. Choose a different team name.',
           409,
@@ -468,6 +555,22 @@ class Repo184Service {
         templateSourceRepoId: null,
         repoStatus: 'provisioning',
         repoError: '',
+        writeupEnabled: Boolean(assignment.generateWriteupRepo),
+        writeupRepoName: writeupRepoName,
+        writeupRepoMarker: assignment.generateWriteupRepo
+          ? 'Managed by Repo184 write-up; assignment=' + assignment.id + '; work-unit=' + id
+          : '',
+        writeupRepoId: null,
+        writeupRepoHtmlUrl: '',
+        writeupRepoCloneUrl: '',
+        writeupRepoSshUrl: '',
+        writeupTemplateProvenance: assignment.generateWriteupRepo ? 'not_generated' : 'disabled',
+        writeupTemplateSourceRepoId: null,
+        writeupRepoStatus: assignment.generateWriteupRepo ? 'provisioning' : 'disabled',
+        writeupRepoError: '',
+        writeupPagesUrl: '',
+        writeupPagesStatus: assignment.generateWriteupRepo ? 'pending' : 'disabled',
+        writeupPagesError: '',
         members: [{
           userId: userId,
           role: 'owner',
@@ -484,7 +587,8 @@ class Repo184Service {
         workUnitId: id,
         assignmentId: assignment.id,
         kind: 'team',
-        repoName: repoName
+        repoName: repoName,
+        writeupRepoName: writeupRepoName
       });
       return id;
     });
@@ -597,6 +701,8 @@ class Repo184Service {
         });
       });
 
+      await this.performProvisionWriteup(workUnitId, assignment);
+
       const refreshed = await this.store.snapshot();
       const current = findWorkUnit(refreshed, workUnitId);
       for (let index = 0; index < current.members.length; index += 1) {
@@ -624,6 +730,149 @@ class Repo184Service {
     }
   }
 
+  async performProvisionWriteup(workUnitId, assignment) {
+    const before = await this.store.snapshot();
+    const workUnit = findWorkUnit(before, workUnitId);
+    if (!workUnit || !workUnit.writeupEnabled) {
+      return;
+    }
+    try {
+      if (workUnit.writeupTemplateProvenance === 'mismatch') {
+        throw new util.AppError('GitHub reported that this write-up repository was generated from a different template. Staff must release this claim and inspect the repository.', 409, 'writeup_template_provenance_mismatch');
+      }
+      let repository = await this.github.getRepository(workUnit.writeupRepoName);
+      if (repository) {
+        if (workUnit.writeupRepoId !== null && String(repository.id) !== String(workUnit.writeupRepoId)) {
+          throw new util.AppError('A different GitHub repository now uses this managed write-up name. Staff must resolve the collision.', 409, 'writeup_repository_identity_mismatch');
+        }
+        if (repository.private || repository.description !== workUnit.writeupRepoMarker) {
+          throw new util.AppError('A repository with this write-up name already exists and was not created by this Repo184 record. Staff must resolve the collision.', 409, 'writeup_repository_collision');
+        }
+        if (workUnit.writeupRepoId === null || workUnit.writeupTemplateProvenance !== 'verified') {
+          const existingSourceId = repository.template_repository && repository.template_repository.id;
+          if (existingSourceId === undefined || existingSourceId === null ||
+              String(existingSourceId) !== String(assignment.writeupTemplateRepoId)) {
+            throw new util.AppError('The existing write-up repository cannot be proven to come from the configured immutable template. Staff must inspect it before any access is granted.', 409, 'writeup_template_provenance_mismatch');
+          }
+        }
+      } else {
+        if (workUnit.writeupRepoId !== null) {
+          throw new util.AppError('The managed write-up repository no longer exists. Repo184 will not create a replacement under the same record.', 409, 'writeup_repository_missing');
+        }
+        await this.verifyAssignmentWriteupTemplate(assignment);
+        repository = await this.github.generateWriteupRepository(
+          assignment,
+          workUnit.writeupRepoName,
+          workUnit.writeupRepoMarker
+        );
+        const generatedSourceId = repository.template_repository && repository.template_repository.id;
+        const provenanceMatches = generatedSourceId !== undefined && generatedSourceId !== null &&
+          String(generatedSourceId) === String(assignment.writeupTemplateRepoId);
+        const generatedFields = writeupRepoFields(repository);
+        await this.store.transaction(function recordGeneratedWriteup(draft) {
+          const unit = findWorkUnit(draft, workUnitId);
+          if (!unit) {
+            return;
+          }
+          Object.assign(unit, generatedFields, {
+            writeupTemplateProvenance: provenanceMatches ? 'verified' : 'mismatch',
+            writeupTemplateSourceRepoId: generatedSourceId === undefined ? null : generatedSourceId,
+            writeupRepoStatus: provenanceMatches ? 'provisioning' : 'error',
+            writeupRepoError: provenanceMatches ? '' : 'GitHub reported a different source template for the generated write-up repository.',
+            updatedAt: util.nowIso()
+          });
+          addAudit(draft, 'system', 'writeup_repository.generated', {
+            workUnitId: unit.id,
+            repoName: unit.writeupRepoName,
+            repoId: generatedFields.writeupRepoId,
+            templateSourceRepoId: unit.writeupTemplateSourceRepoId,
+            templateProvenance: unit.writeupTemplateProvenance
+          });
+        });
+        if (!provenanceMatches) {
+          throw new util.AppError('GitHub reported that the generated write-up repository came from a different template. No student access was granted.', 409, 'writeup_template_provenance_mismatch');
+        }
+      }
+      if (repository.private) {
+        throw new util.AppError('GitHub did not create a public write-up repository. Staff intervention is required.', 502, 'writeup_repository_not_public');
+      }
+      const fields = writeupRepoFields(repository);
+      await this.store.transaction(function writeupReady(draft) {
+        const unit = findWorkUnit(draft, workUnitId);
+        if (!unit) {
+          return;
+        }
+        Object.assign(unit, fields, {
+          writeupTemplateProvenance: 'verified',
+          writeupTemplateSourceRepoId: assignment.writeupTemplateRepoId,
+          writeupRepoStatus: 'ready',
+          writeupRepoError: '',
+          updatedAt: util.nowIso()
+        });
+        addAudit(draft, 'system', 'writeup_repository.ready', {
+          workUnitId: unit.id,
+          repoName: unit.writeupRepoName,
+          repoId: fields.writeupRepoId
+        });
+      });
+    } catch (error) {
+      await this.store.transaction(function writeupError(draft) {
+        const unit = findWorkUnit(draft, workUnitId);
+        if (!unit) {
+          return;
+        }
+        unit.writeupRepoStatus = unit.writeupRepoId !== null && !writeupRepositoryVerificationFailed(error) ? 'ready' : 'error';
+        unit.writeupRepoError = cleanError(error);
+        unit.updatedAt = util.nowIso();
+        addAudit(draft, 'system', 'writeup_repository.error', {
+          workUnitId: unit.id,
+          repoName: unit.writeupRepoName,
+          error: unit.writeupRepoError
+        });
+      });
+      return;
+    }
+
+    const afterRepository = await this.store.snapshot();
+    const current = findWorkUnit(afterRepository, workUnitId);
+    try {
+      const pages = await this.github.ensurePages(
+        current.writeupRepoName,
+        (await this.github.getRepository(current.writeupRepoName)).default_branch || 'main'
+      );
+      await this.store.transaction(function pagesReady(draft) {
+        const unit = findWorkUnit(draft, workUnitId);
+        if (!unit) {
+          return;
+        }
+        unit.writeupPagesUrl = pages.htmlUrl;
+        unit.writeupPagesStatus = 'ready';
+        unit.writeupPagesError = '';
+        unit.updatedAt = util.nowIso();
+        addAudit(draft, 'system', 'writeup_pages.ready', {
+          workUnitId: unit.id,
+          repoName: unit.writeupRepoName,
+          url: pages.htmlUrl
+        });
+      });
+    } catch (error) {
+      await this.store.transaction(function pagesError(draft) {
+        const unit = findWorkUnit(draft, workUnitId);
+        if (!unit) {
+          return;
+        }
+        unit.writeupPagesStatus = 'error';
+        unit.writeupPagesError = cleanError(error);
+        unit.updatedAt = util.nowIso();
+        addAudit(draft, 'system', 'writeup_pages.error', {
+          workUnitId: unit.id,
+          repoName: unit.writeupRepoName,
+          error: unit.writeupPagesError
+        });
+      });
+    }
+  }
+
   syncMemberAccess(workUnitId, userId) {
     const service = this;
     return this.withWorkUnitLock(workUnitId, function syncLocked() {
@@ -645,8 +894,14 @@ class Repo184Service {
     try {
       if (grantStarted) {
         await this.verifyManagedRepository(workUnit, false, true);
+        if (workUnit.writeupEnabled) {
+          await this.verifyManagedWriteupRepository(workUnit, true);
+        }
         const cleanupUser = await this.refreshGitHubIdentity(userId, true);
         await this.github.removeCollaborator(workUnit.repoName, cleanupUser.login);
+        if (workUnit.writeupEnabled) {
+          await this.github.removeCollaborator(workUnit.writeupRepoName, cleanupUser.login);
+        }
         await this.store.transaction(function cleanupUncertainGrant(draft) {
           const unit = findWorkUnit(draft, workUnitId);
           const member = unit && unit.members.find(function match(item) { return item.userId === userId; });
@@ -663,11 +918,14 @@ class Repo184Service {
         });
         grantStarted = false;
       }
-      if (workUnit.repoStatus !== 'ready') {
+      if (workUnit.repoStatus !== 'ready' || (workUnit.writeupEnabled && workUnit.writeupRepoStatus !== 'ready')) {
         return;
       }
       const activeUser = await this.ensureActiveMembership(userId);
       await this.verifyManagedRepository(workUnit, true);
+      if (workUnit.writeupEnabled) {
+        await this.verifyManagedWriteupRepository(workUnit);
+      }
       await this.store.transaction(function reserveGrant(draft) {
         const unit = findWorkUnit(draft, workUnitId);
         const member = unit && unit.members.find(function match(item) { return item.userId === userId; });
@@ -684,6 +942,9 @@ class Repo184Service {
       });
       grantStarted = true;
       const accessStatus = await this.github.addCollaborator(workUnit.repoName, activeUser.login);
+      if (workUnit.writeupEnabled) {
+        await this.github.addCollaborator(workUnit.writeupRepoName, activeUser.login);
+      }
       await this.store.transaction(function synced(draft) {
         const unit = findWorkUnit(draft, workUnitId);
         if (!unit) {
@@ -920,6 +1181,9 @@ class Repo184Service {
     if (displayName.length < 2 || displayName.length > 40 || !normalizedName) {
       throw new util.AppError('Team name must be between 2 and 40 characters.', 400, 'invalid_team_name');
     }
+    if (hasReservedWriteupName(displayName) || hasReservedWriteupName(normalizedName)) {
+      throw new util.AppError('Team name cannot contain "writeup" because that suffix is reserved for write-up repositories.', 400, 'reserved_team_name');
+    }
     return this.store.transaction(function rename(state) {
       const workUnit = findWorkUnit(state, workUnitId);
       if (!workUnit || workUnit.kind !== 'team') {
@@ -1016,17 +1280,23 @@ class Repo184Service {
             }
           });
         }
-        let currentUser = null;
-        try {
-          currentUser = await this.refreshGitHubIdentity(userId, true);
-        } catch (identityError) {
-          if (!isNotFoundError(identityError)) {
-            throw identityError;
-          }
+      }
+      if (existingUnit.writeupEnabled && existingUnit.writeupRepoId !== null) {
+        await this.verifyManagedWriteupRepository(existingUnit, true);
+      }
+      let currentUser = null;
+      try {
+        currentUser = await this.refreshGitHubIdentity(userId, true);
+      } catch (identityError) {
+        if (!isNotFoundError(identityError)) {
+          throw identityError;
         }
-        if (currentUser) {
-          await this.github.removeCollaborator(existingUnit.repoName, currentUser.login);
-        }
+      }
+      if (currentUser && existingUnit.repoId !== null) {
+        await this.github.removeCollaborator(existingUnit.repoName, currentUser.login);
+      }
+      if (currentUser && existingUnit.writeupEnabled && existingUnit.writeupRepoId !== null) {
+        await this.github.removeCollaborator(existingUnit.writeupRepoName, currentUser.login);
       }
     } catch (error) {
       await this.store.transaction(function removalFailed(state) {
@@ -1128,22 +1398,28 @@ class Repo184Service {
 
     let visibilityError = '';
     try {
-      if (reservation.workUnit.repoId !== null) {
-        const repository = await this.verifyManagedRepository(reservation.workUnit, false, true);
-        if (!repository.private) {
-          visibilityError = 'The managed repository is public. Restore private visibility in GitHub immediately.';
-          await this.store.transaction(function markPublic(state) {
-            const workUnit = findWorkUnit(state, workUnitId);
-            if (workUnit) {
-              workUnit.repoStatus = 'error';
-              workUnit.repoError = visibilityError;
-              workUnit.updatedAt = util.nowIso();
-              addAudit(state, actor, 'repository.visibility_error', {
-                workUnitId: workUnit.id,
-                visibility: 'public'
-              });
-            }
-          });
+      if (reservation.workUnit.repoId !== null ||
+          (reservation.workUnit.writeupEnabled && reservation.workUnit.writeupRepoId !== null)) {
+        if (reservation.workUnit.repoId !== null) {
+          const repository = await this.verifyManagedRepository(reservation.workUnit, false, true);
+          if (!repository.private) {
+            visibilityError = 'The managed repository is public. Restore private visibility in GitHub immediately.';
+            await this.store.transaction(function markPublic(state) {
+              const workUnit = findWorkUnit(state, workUnitId);
+              if (workUnit) {
+                workUnit.repoStatus = 'error';
+                workUnit.repoError = visibilityError;
+                workUnit.updatedAt = util.nowIso();
+                addAudit(state, actor, 'repository.visibility_error', {
+                  workUnitId: workUnit.id,
+                  visibility: 'public'
+                });
+              }
+            });
+          }
+        }
+        if (reservation.workUnit.writeupEnabled && reservation.workUnit.writeupRepoId !== null) {
+          await this.verifyManagedWriteupRepository(reservation.workUnit, true);
         }
         const revocationErrors = [];
         for (let index = 0; index < reservation.members.length; index += 1) {
@@ -1165,7 +1441,12 @@ class Repo184Service {
               }
             }
             if (currentUser) {
-              await this.github.removeCollaborator(reservation.workUnit.repoName, currentUser.login);
+              if (reservation.workUnit.repoId !== null) {
+                await this.github.removeCollaborator(reservation.workUnit.repoName, currentUser.login);
+              }
+              if (reservation.workUnit.writeupEnabled && reservation.workUnit.writeupRepoId !== null) {
+                await this.github.removeCollaborator(reservation.workUnit.writeupRepoName, currentUser.login);
+              }
             }
           } catch (memberError) {
             revocationError = memberError;

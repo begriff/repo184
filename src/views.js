@@ -170,7 +170,39 @@ function repositoryPanel(options, workUnit, allowRetry, adminMode) {
   } else {
     content = '<p>GitHub is creating this repository. Refresh this page shortly.</p>';
   }
-  const needsRetry = Boolean(workUnit.repoError) || workUnit.repoStatus !== 'ready' || workUnit.members.some(function accessPending(member) {
+  content = '<div class="repository-entry"><div class="section-heading"><h4>Private code repository</h4>' +
+    statusLabel(workUnit.repoError ? 'verification_error' : workUnit.repoStatus) + '</div>' + content + '</div>';
+  if (workUnit.writeupEnabled) {
+    let writeupContent;
+    if (workUnit.writeupRepoError) {
+      writeupContent = '<div class="notice notice-error"><strong>Write-up repository verification failed.</strong> ' +
+        escapeHtml(workUnit.writeupRepoError) + '</div>';
+    } else if (workUnit.writeupRepoStatus === 'ready') {
+      writeupContent = '<div class="button-row"><a class="button secondary small" href="' +
+        escapeHtml(workUnit.writeupRepoHtmlUrl) + '">Open public write-up repository</a>' +
+        (workUnit.writeupPagesStatus === 'ready' && workUnit.writeupPagesUrl
+          ? '<a class="button secondary small" href="' + escapeHtml(workUnit.writeupPagesUrl) + '">View published write-up</a>'
+          : '') + '</div>';
+      if (!accessReady) {
+        writeupContent += '<p class="field-error">Your push access is ' +
+          escapeHtml(viewingMember.accessStatus.replace(/_/g, ' ')) + '.</p>';
+      }
+      if (workUnit.writeupPagesError) {
+        writeupContent += '<p class="field-error"><strong>GitHub Pages setup failed:</strong> ' +
+          escapeHtml(workUnit.writeupPagesError) + '</p>';
+      } else if (workUnit.writeupPagesStatus !== 'ready') {
+        writeupContent += '<p>GitHub Pages is being enabled from the <code>docs</code> folder.</p>';
+      }
+    } else {
+      writeupContent = '<p>GitHub is creating the public write-up repository. Refresh this page shortly.</p>';
+    }
+    content += '<div class="repository-entry"><div class="section-heading"><h4>Public write-up repository</h4>' +
+      statusLabel(workUnit.writeupRepoError ? 'verification_error' : workUnit.writeupRepoStatus) +
+      '</div>' + writeupContent + '</div>';
+  }
+  const needsRetry = Boolean(workUnit.repoError) || workUnit.repoStatus !== 'ready' ||
+    (workUnit.writeupEnabled && (Boolean(workUnit.writeupRepoError) || workUnit.writeupRepoStatus !== 'ready' ||
+      workUnit.writeupPagesStatus !== 'ready')) || workUnit.members.some(function accessPending(member) {
     return member.accessStatus !== 'ready';
   });
   if (allowRetry && needsRetry) {
@@ -182,9 +214,8 @@ function repositoryPanel(options, workUnit, allowRetry, adminMode) {
   }
   const instructions = !adminMode && homeworkUrl(options)
     ? '<p class="muted workflow-note">Repo184 only creates the repository. Follow the <a href="' + escapeHtml(homeworkUrl(options)) +
-      '">homework instructions</a> for Gradescope submission and public writeup requirements.</p>' : '';
-  return '<section class="repo-panel"><div class="section-heading"><h3>Repository</h3>' +
-    statusLabel(workUnit.repoError ? 'verification_error' : workUnit.repoStatus) + '</div>' + content + instructions + '</section>';
+      '">homework instructions</a> for Gradescope submission and write-up requirements.</p>' : '';
+  return '<section class="repo-panel"><h3>Repositories</h3>' + content + instructions + '</section>';
 }
 
 function workUnitPanel(options, workUnit, canResolve, adminMode) {
@@ -227,12 +258,20 @@ function dashboardPage(options) {
     let detail;
     if (row.workUnit) {
       const member = currentMember(row.workUnit, options.user);
-      const ready = row.workUnit.repoStatus === 'ready' && !row.workUnit.repoError && member && member.accessStatus === 'ready';
+      const writeupReady = !row.workUnit.writeupEnabled ||
+        (row.workUnit.writeupRepoStatus === 'ready' && !row.workUnit.writeupRepoError &&
+          row.workUnit.writeupPagesStatus === 'ready' && !row.workUnit.writeupPagesError);
+      const repositoryError = row.workUnit.repoError || row.workUnit.writeupRepoError || row.workUnit.writeupPagesError;
+      const repositoryStatus = repositoryError
+        ? 'verification_error'
+        : (row.workUnit.writeupEnabled && !writeupReady ? 'provisioning' : row.workUnit.repoStatus);
+      const ready = row.workUnit.repoStatus === 'ready' && !row.workUnit.repoError && writeupReady && member && member.accessStatus === 'ready';
       detail = '<p><strong>' + escapeHtml(row.workUnit.displayName) + '</strong> · ' +
         statusLabel(row.workUnit.lifecycle === 'release_pending' ? 'release_pending' :
-          (row.workUnit.repoError ? 'verification_error' : row.workUnit.repoStatus)) +
+          repositoryStatus) +
         (member && member.accessStatus !== 'ready' ? ' ' + statusLabel('access_' + member.accessStatus) : '') + '</p>' +
-        (ready && row.workUnit.lifecycle !== 'release_pending' ? '<p><a href="' + escapeHtml(row.workUnit.repoHtmlUrl) + '">Open repository</a></p>' :
+        (ready && row.workUnit.lifecycle !== 'release_pending' ? '<p><a href="' + escapeHtml(row.workUnit.repoHtmlUrl) + '">Open code repository</a>' +
+          (row.workUnit.writeupEnabled ? ' · <a href="' + escapeHtml(row.workUnit.writeupRepoHtmlUrl) + '">Open write-up repository</a>' : '') + '</p>' :
           '<p><a href="' + options.basePath + '/assignments/' + assignment.slug + '">View setup status</a></p>') +
         joinRequests(Object.assign({}, options, { assignment: assignment }), row.workUnit, true, false);
     } else if (row.outgoingRequest) {
@@ -245,7 +284,8 @@ function dashboardPage(options) {
     }
     return '<article class="assignment-row"><div class="assignment-title"><h2><a href="' + options.basePath + '/assignments/' + assignment.slug + '">' +
       escapeHtml(assignment.title) + '</a></h2>' + statusLabel(assignment.status) + '</div>' +
-      '<p class="muted">Template: <code>' + escapeHtml(assignment.templateFullName) + '</code> · ' +
+      '<p class="muted">Template: <code>' + escapeHtml(assignment.templateFullName) + '</code>' +
+      (assignment.generateWriteupRepo ? ' · Write-up template: <code>' + escapeHtml(assignment.writeupTemplateFullName) + '</code>' : '') + ' · ' +
       (assignment.maxTeamSize === 1 ? 'Team size: 1 student' : 'Team size: up to 2 students') + '</p>' + detail + '</article>';
   }).join('');
 
@@ -340,15 +380,22 @@ function adminLoginPage(options) {
 
 function assignmentForm(options, assignment) {
   const isNew = !assignment;
-  const value = assignment || { slug: '', title: '', templateFullName: '', repoPrefix: '', maxTeamSize: 2, status: 'closed' };
+  const value = assignment || { slug: '', title: '', templateFullName: '', generateWriteupRepo: false, writeupTemplateFullName: '', repoPrefix: '', maxTeamSize: 2, status: 'closed' };
   const locked = Boolean(assignment && assignment.locked);
   const readOnly = locked ? ' readonly' : '';
   const action = isNew ? options.basePath + '/admin/assignments' : options.basePath + '/admin/assignments/' + assignment.id;
   return '<form method="post" action="' + action + '" class="admin-form">' + csrfField(options.csrf) +
-    (locked ? '<p class="form-note">Slug, template, repository prefix, and team size are locked because an active claim or managed repository exists.</p>' : '') +
+    (locked ? '<p class="form-note">Slug, templates, write-up repository setting, repository prefix, and team size are locked because an active claim or managed repository exists.</p>' : '') +
     '<div><label>Slug</label><input name="slug" value="' + escapeHtml(value.slug) + '" required maxlength="32" placeholder="hw1"' + readOnly + '></div>' +
     '<div><label>Title</label><input name="title" value="' + escapeHtml(value.title) + '" required maxlength="80" placeholder="Homework 1"></div>' +
     '<div><label>Template repository</label><input name="template" value="' + escapeHtml(value.templateFullName) + '" required placeholder="organization/hw1-template"' + readOnly + '></div>' +
+    '<div><label class="check-row"><input type="checkbox" value="1"' +
+      (locked ? ' disabled' : ' name="generateWriteupRepo"') + (value.generateWriteupRepo ? ' checked' : '') +
+      '> Generate a public write-up repository</label>' +
+      (locked ? '<input type="hidden" name="generateWriteupRepo" value="' + (value.generateWriteupRepo ? '1' : '0') + '">' : '') + '</div>' +
+    '<div><label>Write-up template repository</label><input name="writeupTemplate" value="' +
+      escapeHtml(value.writeupTemplateFullName) + '" placeholder="organization/hw1-writeup-template"' + readOnly +
+      '><span class="muted">Required when public write-up repositories are enabled.</span></div>' +
     '<div><label>Repository prefix</label><input name="repoPrefix" value="' + escapeHtml(value.repoPrefix) + '" required maxlength="48" placeholder="hw1"' + readOnly + '></div>' +
     '<div><label>Maximum team size</label><select' + (locked ? ' disabled' : ' name="maxTeamSize"') + '><option value="1"' + (value.maxTeamSize === 1 ? ' selected' : '') + '>1 student</option><option value="2"' + (value.maxTeamSize === 2 ? ' selected' : '') + '>2 students</option></select>' +
     (locked ? '<input type="hidden" name="maxTeamSize" value="' + escapeHtml(value.maxTeamSize) + '">' : '') + '</div>' +
@@ -377,11 +424,16 @@ function adminWorkUnit(options, workUnit) {
   }).join('') + '</ul>';
   const release = workUnit.lifecycle !== 'released'
     ? '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/release" class="release-form">' +
-      csrfField(options.csrf) + '<label class="check-row"><input type="checkbox" name="confirm" value="release" required> Preserve the private repository, revoke direct student access, and let all members choose again.</label>' +
+      csrfField(options.csrf) + '<label class="check-row"><input type="checkbox" name="confirm" value="release" required> Preserve the repositories, revoke direct student access, and let all members choose again.</label>' +
       '<button type="submit" class="button secondary small">' + (workUnit.lifecycle === 'release_pending' ? 'Finish releasing claim' : 'Release assignment claim') + '</button></form>'
-    : '<p class="muted">This claim was released. The private repository is preserved for staff.</p>';
-  const summaryStatus = workUnit.lifecycle && workUnit.lifecycle !== 'active' ? workUnit.lifecycle : workUnit.repoStatus;
-  return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || workUnit.lifecycle === 'release_pending' || pending ? ' open' : '') + '><summary>' +
+    : '<p class="muted">This claim was released. Its repositories are preserved for staff.</p>';
+  const writeupError = workUnit.writeupEnabled && (workUnit.writeupRepoError || workUnit.writeupPagesError);
+  const writeupPending = workUnit.writeupEnabled &&
+    (workUnit.writeupRepoStatus !== 'ready' || workUnit.writeupPagesStatus !== 'ready');
+  const summaryStatus = workUnit.lifecycle && workUnit.lifecycle !== 'active'
+    ? workUnit.lifecycle
+    : (workUnit.repoError || writeupError ? 'verification_error' : (writeupPending ? 'provisioning' : workUnit.repoStatus));
+  return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' || pending ? ' open' : '') + '><summary>' +
     '<strong>' + escapeHtml(workUnit.assignment.slug) + ' · ' + escapeHtml(workUnit.displayName) + '</strong> ' + statusLabel(summaryStatus) +
     ' <span class="muted">' + escapeHtml(workUnit.repoName) + '</span></summary><div class="admin-unit-body">' + rename +
     '<h4>Members</h4>' + members + (active ? pending : '') + repositoryPanel(options, workUnit, active, true) + release + '</div></details>';
@@ -390,7 +442,9 @@ function adminWorkUnit(options, workUnit) {
 function adminPage(options) {
   const assignments = options.adminView.assignments.map(function assignment(item) {
     return '<details class="admin-assignment"><summary><strong>' + escapeHtml(item.title) + '</strong> ' + statusLabel(item.status) +
-      ' <code>' + escapeHtml(item.templateFullName) + '</code></summary>' + assignmentForm(options, item) + '</details>';
+      ' <code>' + escapeHtml(item.templateFullName) + '</code>' +
+      (item.generateWriteupRepo ? ' + <code>' + escapeHtml(item.writeupTemplateFullName) + '</code>' : '') +
+      '</summary>' + assignmentForm(options, item) + '</details>';
   }).join('');
   const units = options.adminView.workUnits.map(function unit(item) { return adminWorkUnit(options, item); }).join('');
   const audit = options.adminView.audit.map(function event(item) {

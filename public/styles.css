@@ -182,7 +182,7 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 .button-row > * + *, .inline-controls > * + * { margin-left: 10px; }
 .section-heading { align-items: flex-start; }
 .section-heading h2, .section-heading h3, .assignment-title h2 { margin-bottom: 0; }
-.button-row { justify-content: flex-start; }
+.button-row { justify-content: flex-start; flex-wrap: wrap; }
 .button-row form { margin: 0; }
 
 

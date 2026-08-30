@@ -88,6 +88,19 @@ function membershipNotice(options) {
     return '<div class="notice notice-success"><strong>Organization access is active.</strong> Your GitHub account belongs to ' +
       escapeHtml(options.githubOrg) + '.</div>';
   }
+  const invitationUrl = 'https://github.com/orgs/' + encodeURIComponent(options.githubOrg) + '/invitation';
+  if (user.membershipState === 'pending') {
+    return '<div class="notice notice-info"><strong>Your invitation to ' + escapeHtml(options.githubOrg) + ' is pending.</strong> ' +
+      'Accept it on GitHub before creating or joining a repository.' +
+      '<div class="button-row"><a class="button small" href="' + escapeHtml(invitationUrl) + '">Accept invitation on GitHub</a>' +
+      '<form method="post" action="' + options.basePath + '/org/retry">' + csrfField(options.csrf) +
+      '<button type="submit" class="button secondary small">Check again</button></form></div></div>';
+  }
+  if (user.membershipState === 'absent') {
+    return '<div class="notice notice-error"><strong>No current invitation to ' + escapeHtml(options.githubOrg) + ' was found.</strong> ' +
+      '<form method="post" action="' + options.basePath + '/org/invite" class="inline-form">' + csrfField(options.csrf) +
+      '<button type="submit" class="link-button">Send a new invitation</button></form></div>';
+  }
   return '<div class="notice notice-error"><strong>Organization access is ' + escapeHtml(user.membershipState) + '.</strong> ' +
     'Repository creation is paused until GitHub reports an active membership. ' +
     '<form method="post" action="' + options.basePath + '/org/retry" class="inline-form">' + csrfField(options.csrf) +

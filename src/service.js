@@ -236,6 +236,29 @@ class Repo184Service {
     return this.getUser(userId);
   }
 
+  async sendMembershipInvitation(userId) {
+    const user = await this.refreshGitHubIdentity(userId);
+    const membership = await this.github.sendInvitation(user);
+    const membershipId = membership && membership.user ? membership.user.id : null;
+    if (membershipId !== null && String(membershipId) !== String(user.numericId)) {
+      throw new util.AppError('GitHub returned organization membership for a different account. Sign out and sign in with GitHub again.', 409, 'github_identity_mismatch');
+    }
+    const nextState = membership && membership.state ? membership.state : 'absent';
+    await this.store.transaction(function updateInvitationState(state) {
+      if (!state.users[userId]) {
+        return;
+      }
+      state.users[userId].membershipState = nextState;
+      state.users[userId].membershipRole = membership && membership.role ? membership.role : '';
+      state.users[userId].membershipCheckedAt = util.nowIso();
+      state.users[userId].updatedAt = util.nowIso();
+      addAudit(state, user.login, 'organization.invitation_sent', {
+        state: nextState
+      });
+    });
+    return this.getUser(userId);
+  }
+
   async ensureActiveMembership(userId) {
     const user = await this.refreshMembership(userId);
     if (!user || user.membershipState !== 'active') {

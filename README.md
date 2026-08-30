@@ -98,43 +98,49 @@ stops serving data operations until it is restarted. Run exactly one Repo184
 process against a data file; the store is safe for one process, not multiple
 workers or hosts.
 
-## 1. Register the GitHub App
+## 1. Register the two GitHub Apps
 
-An owner of [`cal-cs184-student`](https://github.com/cal-cs184-student) should
-open **Organization settings -> Developer settings -> GitHub Apps -> New GitHub
-App**. Use these production settings:
+Repo184 deliberately separates student sign-in from privileged provisioning.
+This lets GitHub present the Login App as identity-only without the **Act on
+your behalf** warning. An owner of
+[`cal-cs184-student`](https://github.com/cal-cs184-student) should open
+**Organization settings -> Developer settings -> GitHub Apps** and configure
+both Apps below.
+
+### Login App
+
+Create an identity-only App such as `Repo184 Login`:
 
 | GitHub setting | Value |
 | --- | --- |
-| GitHub App name | A globally unique name, such as `Repo184 CS184` |
 | Homepage URL | `https://cs184.eecs.berkeley.edu/repo/` |
 | Callback URL | `https://cs184.eecs.berkeley.edu/repo/auth/github/callback` |
 | Expire user authorization tokens | Enabled |
+| Request authorization during installation | Disabled |
 | Setup URL | Blank |
 | Webhook | Inactive; no webhook URL or secret |
 | Where can this GitHub App be installed? | Only on this account |
 
-Set only these permissions:
+Leave every repository, organization, enterprise, and account permission unset,
+and subscribe to no events. The implicit read-only public profile access is
+enough for Repo184 to verify the student's immutable GitHub account ID. Generate
+one client secret, but do not install this App. Record its **Client ID** and
+**Client secret** as `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+
+### Provisioning App
+
+The separately installed App never receives a student user token. Give it only:
 
 | Permission group | Permission | Access | Why |
 | --- | --- | --- | --- |
 | Repository | Administration | Read and write | Create private repositories and manage collaborators |
 | Repository | Contents | Read-only | Read and generate from template repositories |
-| Organization | Members | Read and write | Check membership, invite a user, and let the signed-in user accept the invitation |
+| Organization | Members | Read and write | Check membership and send organization invitations |
 
-Leave all account permissions and subscribed events unset. GitHub grants the
-usual read-only metadata permission automatically. These permissions are the
-minimum used by the service; in particular, template generation requires
-repository Administration (write) and Contents (read).
-
-After creating the app:
-
-1. Generate a client secret.
-2. Generate and download a private key. GitHub only offers the private key for
-   download once, so put it directly into the server's secret configuration and
-   do not commit it.
-3. Open **Install App**, install it on `cal-cs184-student`, and choose repository
-   access.
+Leave account and enterprise permissions and subscribed events unset. Disable
+user authorization callbacks and webhooks. Generate and download a private key,
+then open **Install App**, install it on `cal-cs184-student`, and choose repository
+access. The provisioning App does not need a client secret for Repo184.
 
 Choose **Only select repositories** and select every private template
 repository. GitHub automatically grants the creating app access to repositories
@@ -149,13 +155,14 @@ templates, but gives the App high-impact Administration access to every current
 and future repository in the organization. Use it only if staff explicitly
 accept that wider scope in this dedicated student organization.
 
-Record the following values:
+Record its **App ID**, the **Installation ID** from the numeric suffix of its
+installation settings URL, and the downloaded private-key PEM as
+`GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and `GITHUB_PRIVATE_KEY`.
 
-- **App ID** and **Client ID** from the app's General page;
-- the newly generated **Client secret**;
-- **Installation ID**, the numeric value at the end of the app installation's
-  settings URL;
-- the downloaded private-key PEM.
+On first sign-in, the Provisioning App sends the student an organization
+invitation. The student accepts it on GitHub and returns to Repo184 to check
+membership. Repo184 never accepts organization membership using the Login App's
+temporary user token, and it does not store that token.
 
 Useful GitHub references: [registering a GitHub
 App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app),
@@ -242,9 +249,9 @@ SESSION_SECRET=<at-least-32-random-bytes>
 ADMIN_PASSWORD_HASH=<scrypt-hash-produced-by-this-project>
 
 GITHUB_ORG=cal-cs184-student
-GITHUB_APP_ID=<app-id>
-GITHUB_CLIENT_ID=<client-id>
-GITHUB_CLIENT_SECRET=<client-secret>
+GITHUB_CLIENT_ID=<login-app-client-id>
+GITHUB_CLIENT_SECRET=<login-app-client-secret>
+GITHUB_APP_ID=<provisioning-app-id>
 GITHUB_INSTALLATION_ID=<installation-id>
 GITHUB_PRIVATE_KEY="<PEM-with-newlines-written-as-literal-backslash-n>"
 
@@ -380,12 +387,14 @@ from the operational JSON snapshots.
 - [ ] A reviewed commit passes `npm test` and `npm run check`.
 - [ ] A supported Node.js runtime is used if the host offers one; otherwise the
       Node.js 11 compatibility path is understood as temporary technical debt.
-- [ ] The GitHub App callback is the exact HTTPS `/repo/auth/github/callback`
-      URL and webhooks are disabled.
-- [ ] App permissions are Repository Administration (write), Repository
-      Contents (read), and Organization Members (write), with no extras.
-- [ ] The app is installed on `cal-cs184-student` and can access every private
-      template.
+- [ ] The Login App callback is the exact HTTPS `/repo/auth/github/callback`
+      URL; it has no repository, organization, or enterprise permissions and is
+      not installed.
+- [ ] The Provisioning App has Repository Administration (write), Repository
+      Contents (read), and Organization Members (write), with no extras or user
+      authorization flow.
+- [ ] The Provisioning App is installed on `cal-cs184-student` and can access
+      every private template.
 - [ ] Organization base permissions are none; repository creation is enabled
       for both members and GitHub Apps so the App can generate private repos.
 - [ ] Staff explicitly accept that a free organization cannot restrict active

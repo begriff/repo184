@@ -117,9 +117,9 @@ function createAttemptLimiter() {
   };
 }
 
-function createGithubActionLimiter(globalLimit) {
+function createGithubActionLimiter(globalLimit, requestedWindowMs) {
   const records = Object.create(null);
-  const windowMs = 15 * 60 * 1000;
+  const windowMs = requestedWindowMs || (15 * 60 * 1000);
   const maxGlobalActions = globalLimit || 2000;
   const maxRecords = 10000;
   let globalWindow = { actions: 0, startedAt: Date.now() };
@@ -202,6 +202,7 @@ function createRouter(overrides) {
   const studentActionLimiter = createGithubActionLimiter(2000);
   const adminActionLimiter = createGithubActionLimiter(200);
   const oauthActionLimiter = createGithubActionLimiter(500);
+  const invitationSendLimiter = createGithubActionLimiter(400, 24 * 60 * 60 * 1000);
   const router = express.Router();
 
   router.use('/assets', express.static(path.join(__dirname, '..', 'public'), {
@@ -317,6 +318,17 @@ function createRouter(overrides) {
     ];
   }
 
+  function requireInvitationSendAllowance(req, res, next) {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    if (!invitationSendLimiter.take([
+      { key: 'invite-ip:' + ip, limit: 10 },
+      { key: 'invite-user:' + String(req.currentUser.id), limit: 3 }
+    ])) {
+      return next(new util.AppError('Too many invitation requests. Wait until tomorrow or ask course staff.', 429, 'invitation_send_limited'));
+    }
+    next();
+  }
+
   function requireGithubActionAllowance(req, res, next) {
     const isAdmin = Boolean(req.repo184Session.admin);
     const userId = req.currentUser ? req.currentUser.id : 'anonymous';
@@ -388,14 +400,14 @@ function createRouter(overrides) {
     if (!studentActionLimiter.take(githubActionKeys(req, profile.id, false))) {
       throw new util.AppError('Too many GitHub sign-ins were requested for this account. Wait 15 minutes and try again.', 429, 'github_action_rate_limited');
     }
-    const membership = await github.onboardUser(profile, userToken);
+    const membership = await github.onboardUser(profile);
     const user = await service.rememberUser(profile, membership);
     const preserveAdmin = Boolean(req.repo184Session.admin);
     rotateSession(req, { userId: user.id, admin: preserveAdmin || undefined });
     setFlash(req, user.membershipState === 'active' ? 'success' : 'info',
       user.membershipState === 'active'
         ? 'GitHub connected and course organization access is active.'
-        : 'GitHub connected. Organization membership is still pending; reconnect if it does not activate shortly.');
+        : 'GitHub connected. Accept the ' + config.githubOrg + ' organization invitation to continue.');
     return res.redirect(config.basePath + '/');
   }));
 
@@ -426,7 +438,16 @@ function createRouter(overrides) {
     setFlash(req, user.membershipState === 'active' ? 'success' : 'info',
       user.membershipState === 'active'
         ? 'Organization access is active.'
-        : 'Membership is still ' + user.membershipState + '. Reconnect GitHub to accept a pending invitation.');
+        : 'Membership is still ' + user.membershipState + '. Accept the GitHub invitation, then check again.');
+    return res.redirect(config.basePath + '/');
+  }));
+
+  router.post('/org/invite', requireCsrf, requireUser, requireInvitationSendAllowance, asyncRoute(async function sendInvitation(req, res) {
+    const user = await service.sendMembershipInvitation(req.currentUser.id);
+    setFlash(req, user.membershipState === 'active' ? 'success' : 'info',
+      user.membershipState === 'active'
+        ? 'Organization access is already active.'
+        : 'A ' + config.githubOrg + ' invitation was sent. Accept it on GitHub, then check again.');
     return res.redirect(config.basePath + '/');
   }));
 

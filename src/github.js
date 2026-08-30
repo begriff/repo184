@@ -487,21 +487,6 @@ class GitHubClient {
     }, options);
   }
 
-  userRequest(userToken, path, method, body) {
-    const reservationError = this.reserveWriteRequest(method);
-    if (reservationError) {
-      return Promise.reject(reservationError);
-    }
-    return this.withApiRequestSlot(function userApiRequest() {
-      return requestJson({
-        path: path,
-        method: method,
-        body: body,
-        headers: { Authorization: 'Bearer ' + userToken }
-      });
-    });
-  }
-
   async getMembership(login, priority) {
     const response = await this.appRequest(
       '/orgs/' + encodeURIComponent(this.config.githubOrg) + '/memberships/' + encodeURIComponent(login),
@@ -516,7 +501,7 @@ class GitHubClient {
     return response.body;
   }
 
-  async onboardUser(user, userToken) {
+  async onboardUser(user) {
     let membership = await this.getMembership(user.login);
     if (!membership) {
       const invitation = await this.appRequest(
@@ -531,25 +516,22 @@ class GitHubClient {
         }
       } else {
         requireSuccess(invitation, 201, 'invite the user to the course organization');
-        membership = { state: 'pending', role: 'member' };
-      }
-    }
-
-    if (membership.state === 'pending' && userToken) {
-      const acceptance = await this.userRequest(
-        userToken,
-        '/user/memberships/orgs/' + encodeURIComponent(this.config.githubOrg),
-        'PATCH',
-        { state: 'active' }
-      );
-      requireSuccess(acceptance, [200, 202], 'accept the organization invitation');
-      if (acceptance.status === 200 && acceptance.body) {
-        membership = acceptance.body;
-      } else {
-        membership = await this.getMembership(user.login) || membership;
+        membership = {
+          state: 'pending',
+          role: 'member',
+          user: { id: user.numericId, login: user.login }
+        };
       }
     }
     return membership;
+  }
+
+  async sendInvitation(user) {
+    const membership = await this.getMembership(user.login);
+    if (membership) {
+      return membership;
+    }
+    return this.onboardUser(user);
   }
 
   async validateTemplate(owner, repo) {
@@ -712,6 +694,20 @@ class FakeGitHubClient {
       numericId: user.numericId
     };
     return { state: 'active', role: 'member', user: { id: user.numericId, login: user.login } };
+  }
+
+  async sendInvitation(user) {
+    const key = user.login.toLowerCase();
+    const existing = this.memberships[key];
+    if (existing) {
+      return { state: existing.state, role: existing.role, user: { id: existing.numericId, login: user.login } };
+    }
+    this.memberships[key] = {
+      state: 'pending',
+      role: 'member',
+      numericId: user.numericId
+    };
+    return { state: 'pending', role: 'member', user: { id: user.numericId, login: user.login } };
   }
 
   async getMembership(login) {

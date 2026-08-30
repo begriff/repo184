@@ -280,6 +280,34 @@ async function serviceTests(testDirectory) {
   assert(bobDashboardHtml.indexOf('verification error') !== -1);
   assert.strictEqual(bobDashboardHtml.indexOf(bobReplacement.repoHtmlUrl), -1,
     'a repository with a verification error must not be presented as ready to open');
+  const pendingDashboard = util.clone(bobDashboardWithError);
+  pendingDashboard.user.membershipState = 'pending';
+  const pendingDashboardHtml = views.dashboardPage({
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    githubOrg: config.githubOrg,
+    courseHomeworkUrl: '/fa26/hw/',
+    csrf: 'test-csrf',
+    user: pendingDashboard.user,
+    dashboard: pendingDashboard
+  });
+  assert(pendingDashboardHtml.indexOf('Accept invitation on GitHub') !== -1);
+  assert(pendingDashboardHtml.indexOf('https://github.com/orgs/cal-cs184-student/invitation') !== -1);
+  assert.strictEqual(pendingDashboardHtml.indexOf('/org/invite'), -1,
+    'a pending invitation must be accepted rather than cancelled and recreated');
+  const absentDashboard = util.clone(pendingDashboard);
+  absentDashboard.user.membershipState = 'absent';
+  const absentDashboardHtml = views.dashboardPage({
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    githubOrg: config.githubOrg,
+    courseHomeworkUrl: '/fa26/hw/',
+    csrf: 'test-csrf',
+    user: absentDashboard.user,
+    dashboard: absentDashboard
+  });
+  assert(absentDashboardHtml.indexOf('/org/invite') !== -1);
+  assert(absentDashboardHtml.indexOf('Send a new invitation') !== -1);
   github.getRepository = originalGetRepository;
   await store.transaction(function simulateLegacyErrorState(state) {
     const unit = state.workUnits.find(function match(item) { return item.id === bobReplacement.id; });
@@ -632,6 +660,36 @@ async function githubTransportTests() {
   };
   await expectError(invitationClient.onboardUser({ login: 'limited-user', numericId: 42 }),
     'organization_invitation_limited');
+
+  const inviteOnlyClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  const inviteOnlyCalls = [];
+  inviteOnlyClient.appRequest = async function inviteOnlyRequest(requestPath, method) {
+    inviteOnlyCalls.push({ path: requestPath, method: method });
+    if (method === 'GET') {
+      return { status: 404, body: { message: 'Not Found' } };
+    }
+    return { status: 201, body: { id: 123 } };
+  };
+  const pendingMembership = await inviteOnlyClient.onboardUser(
+    { login: 'invite-only-user', numericId: 43 },
+    'a-user-token-that-must-not-be-used'
+  );
+  assert.strictEqual(pendingMembership.state, 'pending');
+  assert.deepStrictEqual(inviteOnlyCalls.map(function method(call) { return call.method; }), ['GET', 'POST'],
+    'onboarding must invite with the installation token and never accept membership as the student');
+
+  const sendClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  const sendCalls = [];
+  sendClient.appRequest = async function sendRequest(requestPath, method) {
+    sendCalls.push({ path: requestPath, method: method });
+    if (method === 'GET') {
+      return { status: 404, body: { message: 'Not Found' } };
+    }
+    return { status: 201, body: { id: 124 } };
+  };
+  const sentMembership = await sendClient.sendInvitation({ login: 'send-user', numericId: 44 });
+  assert.strictEqual(sentMembership.state, 'pending');
+  assert.deepStrictEqual(sendCalls.map(function method(call) { return call.method; }), ['GET', 'GET', 'POST']);
 }
 
 async function httpTests(testDirectory) {

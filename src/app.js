@@ -519,7 +519,10 @@ function createRouter(overrides) {
     if (!req.repo184Session.admin) {
       return res.send(views.adminLoginPage(pageOptions(req)));
     }
-    const adminView = await service.getAdminView();
+    const adminView = await service.getAdminView({
+      query: req.query.auditQuery,
+      page: req.query.auditPage
+    });
     return res.send(views.adminPage(Object.assign(pageOptions(req), { adminView: adminView, admin: true })));
   }));
 

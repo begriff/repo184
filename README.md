@@ -379,6 +379,10 @@ The staff console supports these distinct operations:
 - **Delete empty assignment** removes configuration only after all of its team
   records are gone. Staff must type the exact assignment slug.
 
+The recent-activity table shows 25 entries per page and can be searched by
+actor, action, assignment, team, repository, or other stored audit details.
+Multiple search terms must all match the same audit entry.
+
 Permanent deletion cannot be undone by restoring Repo184's JSON data file.
 GitHub repository deletion is external and remains deleted; use the release
 operation when the goal is only to let students choose again. The existing

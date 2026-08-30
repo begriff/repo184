@@ -479,6 +479,31 @@ function adminPage(options) {
     });
     return '<tr><td><time>' + escapeHtml(new Date(item.createdAt).toLocaleString('en-US')) + '</time></td><td>' + escapeHtml(item.actor) + '</td><td><code>' + escapeHtml(item.action) + '</code></td><td>' + escapeHtml(detailValues.join(' · ')) + '</td></tr>';
   }).join('');
+  const auditPagination = options.adminView.auditPagination;
+  function auditPageUrl(pageNumber) {
+    const parameters = [];
+    if (auditPagination.query) {
+      parameters.push('auditQuery=' + encodeURIComponent(auditPagination.query));
+    }
+    parameters.push('auditPage=' + encodeURIComponent(pageNumber));
+    return options.basePath + '/admin?' + parameters.join('&') + '#activity-log';
+  }
+  const auditSearch = '<form method="get" action="' + options.basePath + '/admin#activity-log" class="audit-search">' +
+    '<label for="audit-query">Search activity</label><div class="inline-controls"><input id="audit-query" type="search" name="auditQuery" maxlength="100" value="' +
+    escapeHtml(auditPagination.query) + '" placeholder="Actor, action, assignment, team, or repository">' +
+    '<button class="button secondary small" type="submit">Search</button>' +
+    (auditPagination.query ? '<a href="' + options.basePath + '/admin#activity-log">Clear</a>' : '') + '</div></form>';
+  const auditSummary = auditPagination.total
+    ? '<p class="muted">Showing ' + escapeHtml(auditPagination.from) + '–' + escapeHtml(auditPagination.to) + ' of ' + escapeHtml(auditPagination.total) +
+      (auditPagination.query ? ' matching entries.' : ' entries.') + '</p>'
+    : '<p class="muted">' + (auditPagination.query ? 'No activity entries match this search.' : 'No activity has been recorded yet.') + '</p>';
+  const auditPages = auditPagination.pageCount > 1
+    ? '<nav class="pagination" aria-label="Activity log pages">' +
+      (auditPagination.page > 1 ? '<a href="' + escapeHtml(auditPageUrl(auditPagination.page - 1)) + '">← Previous</a>' : '<span class="muted">← Previous</span>') +
+      '<span>Page ' + escapeHtml(auditPagination.page) + ' of ' + escapeHtml(auditPagination.pageCount) + '</span>' +
+      (auditPagination.page < auditPagination.pageCount ? '<a href="' + escapeHtml(auditPageUrl(auditPagination.page + 1)) + '">Next →</a>' : '<span class="muted">Next →</span>') +
+      '</nav>'
+    : '';
   return page(Object.assign({}, options, {
     title: 'Administration',
     admin: true,
@@ -487,8 +512,9 @@ function adminPage(options) {
       '<section class="panel"><h2>Add assignment</h2>' + assignmentForm(options, null) + '</section>' +
       '<section class="admin-section"><h2>Assignments</h2>' + (assignments || '<p class="muted">No assignments configured.</p>') + '</section>' +
       '<section class="admin-section"><h2>Teams and repositories</h2>' + (units || '<p class="muted">No repositories created.</p>') + '</section>' +
-      '<section class="admin-section"><h2>Recent activity</h2><div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>' +
-      (audit || '<tr><td colspan="4">No activity yet.</td></tr>') + '</tbody></table></div></section>'
+      '<section class="admin-section" id="activity-log"><h2>Recent activity</h2>' + auditSearch + auditSummary +
+      '<div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>' +
+      (audit || '<tr><td colspan="4">No matching activity.</td></tr>') + '</tbody></table></div>' + auditPages + '</section>'
   }));
 }
 

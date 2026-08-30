@@ -230,6 +230,10 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 .inline-controls input { max-width: 320px; }
 .danger-zone { margin-top: 18px; border-top: 1px solid #ce9696; padding-top: 12px; }
 .danger-zone h4, .danger-zone label { color: #7d1616; }
+.audit-search { max-width: 620px; margin: 14px 0 8px; }
+.audit-search .inline-controls { justify-content: flex-start; }
+.audit-search input { max-width: 430px; }
+.pagination { justify-content: flex-end; margin-top: 14px; }
 
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }

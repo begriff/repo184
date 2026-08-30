@@ -1963,8 +1963,32 @@ class Repo184Service {
     };
   }
 
-  async getAdminView() {
+  async getAdminView(auditOptions) {
     const state = await this.store.snapshot();
+    const auditInput = auditOptions || {};
+    const auditQuery = String(auditInput.query || '').trim().slice(0, 100);
+    const auditTerms = auditQuery.toLowerCase().split(/\s+/).filter(function present(term) {
+      return Boolean(term);
+    });
+    const matchingAudit = state.audit.filter(function matchesSearch(event) {
+      if (!auditTerms.length) {
+        return true;
+      }
+      const haystack = [
+        event.createdAt,
+        event.actor,
+        event.action,
+        JSON.stringify(event.details || {})
+      ].join(' ').toLowerCase();
+      return auditTerms.every(function includesTerm(term) {
+        return haystack.indexOf(term) !== -1;
+      });
+    }).reverse();
+    const auditPageSize = 25;
+    const auditPageCount = Math.max(1, Math.ceil(matchingAudit.length / auditPageSize));
+    const requestedAuditPage = Math.max(1, Math.floor(Number(auditInput.page) || 1));
+    const auditPage = Math.min(requestedAuditPage, auditPageCount);
+    const auditOffset = (auditPage - 1) * auditPageSize;
     return {
       assignments: state.assignments.slice().sort(function sort(left, right) {
         return left.createdAt.localeCompare(right.createdAt);
@@ -1990,7 +2014,16 @@ class Repo184Service {
         return result;
       }),
       users: util.clone(state.users),
-      audit: state.audit.slice(-50).reverse()
+      audit: matchingAudit.slice(auditOffset, auditOffset + auditPageSize),
+      auditPagination: {
+        query: auditQuery,
+        page: auditPage,
+        pageCount: auditPageCount,
+        pageSize: auditPageSize,
+        total: matchingAudit.length,
+        from: matchingAudit.length ? auditOffset + 1 : 0,
+        to: Math.min(auditOffset + auditPageSize, matchingAudit.length)
+      }
     };
   }
 }

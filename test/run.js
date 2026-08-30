@@ -672,6 +672,33 @@ async function adminControlServiceTests(testDirectory) {
   await service.deleteWorkUnit(releasedTeam.id, releasedTeam.repoName, 'admin');
   assert.strictEqual((await service.getWorkUnit(replacementTeam.id)).lifecycle, 'active',
     'deleting a released record must not reclaim or disturb the student\'s current assignment');
+
+  await store.transaction(function addPaginationFixtures(state) {
+    for (let index = 0; index < 60; index += 1) {
+      state.audit.push({
+        id: 'audit-pagination-' + index,
+        actor: 'fixture-actor',
+        action: 'fixture.audit',
+        details: { repoName: 'pagination-repo-' + index },
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString()
+      });
+    }
+  });
+  const firstAuditPage = await service.getAdminView({ query: 'fixture.audit', page: 1 });
+  assert.strictEqual(firstAuditPage.audit.length, 25);
+  assert.strictEqual(firstAuditPage.auditPagination.total, 60);
+  assert.strictEqual(firstAuditPage.auditPagination.pageCount, 3);
+  assert.strictEqual(firstAuditPage.audit[0].details.repoName, 'pagination-repo-59');
+  const secondAuditPage = await service.getAdminView({ query: 'fixture.audit', page: 2 });
+  assert.strictEqual(secondAuditPage.audit.length, 25);
+  assert.strictEqual(secondAuditPage.auditPagination.from, 26);
+  const clampedAuditPage = await service.getAdminView({ query: 'fixture.audit', page: 99 });
+  assert.strictEqual(clampedAuditPage.auditPagination.page, 3);
+  assert.strictEqual(clampedAuditPage.audit.length, 10);
+  const searchedAudit = await service.getAdminView({ query: 'fixture.audit pagination-repo-37', page: 1 });
+  assert.strictEqual(searchedAudit.auditPagination.total, 1,
+    'audit search must require every search term across action and details');
+  assert.strictEqual(searchedAudit.audit[0].details.repoName, 'pagination-repo-37');
 }
 
 function singleInstanceTests(testDirectory) {
@@ -1025,7 +1052,13 @@ async function httpTests(testDirectory) {
     assert(response.body.indexOf('Generate a public write-up repository') !== -1);
     assert(response.body.indexOf('Archive assignment') !== -1);
     assert(response.body.indexOf('Delete team and repositories') !== -1);
+    assert(response.body.indexOf('name="auditQuery"') !== -1);
     const staffCsrf = csrfFrom(response.body);
+
+    response = await httpRequest(server, jar, '/repo/admin?auditQuery=assignment.created');
+    assert.strictEqual(response.status, 200);
+    assert(response.body.indexOf('value="assignment.created"') !== -1);
+    assert(response.body.indexOf('matching entries') !== -1);
 
     response = await httpRequest(server, jar, '/repo/admin/assignments/' + httpAssignment.id + '/archive', {
       method: 'POST',

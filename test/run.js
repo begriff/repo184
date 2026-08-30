@@ -677,23 +677,28 @@ async function httpTests(testDirectory) {
     response = await httpRequest(server, jar, '/repo/');
     assert.strictEqual(response.status, 200);
     assert(response.body.indexOf('Homework 0') !== -1);
+    assert.strictEqual(response.body.indexOf('href="/repo/admin"'), -1);
 
     response = await httpRequest(server, jar, '/repo/assignments/hw0');
     assert.strictEqual(response.status, 200);
     assert(response.body.indexOf('Create a team') !== -1);
     assert.strictEqual(response.body.indexOf('Work individually'), -1);
     assert.strictEqual(response.body.indexOf('/individual'), -1);
+    assert.strictEqual(response.body.indexOf('name="confirm"'), -1);
+    assert.strictEqual(response.body.indexOf('Your team starts with you'), -1);
+    assert.strictEqual(response.body.indexOf('Open a team and send a request'), -1);
+    assert.strictEqual(response.body.indexOf('Repository template:'), -1);
     const csrf = csrfFrom(response.body);
 
     response = await httpRequest(server, jar, '/repo/assignments/hw0/teams', {
       method: 'POST',
-      body: encodeForm({ csrf: 'wrong-token', confirm: 'yes', teamName: 'HTTP Solo' })
+      body: encodeForm({ csrf: 'wrong-token', teamName: 'HTTP Solo' })
     });
     assert.strictEqual(response.status, 403);
 
     response = await httpRequest(server, jar, '/repo/assignments/hw0/teams', {
       method: 'POST',
-      body: encodeForm({ csrf: csrf, confirm: 'yes', teamName: 'HTTP Solo' })
+      body: encodeForm({ csrf: csrf, teamName: 'HTTP Solo' })
     });
     assert.strictEqual(response.status, 302);
 

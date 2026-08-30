@@ -36,8 +36,6 @@ function page(options) {
     navigation += '<a href="' + basePath + '/admin">Staff</a>' +
       '<form method="post" action="' + basePath + '/admin/logout" class="inline-form">' +
       csrfField(options.csrf) + '<button class="link-button" type="submit">Staff sign out</button></form>';
-  } else {
-    navigation += '<a href="' + basePath + '/admin">Staff</a>';
   }
   if (user) {
     navigation += '<span class="nav-user">@' + escapeHtml(user.login) + '</span>' +
@@ -258,14 +256,11 @@ function assignmentPage(options) {
       : resolvedRequestNotice(options.resolvedRequest);
     let create = '';
     if (assignment.status === 'open' && options.user.membershipState === 'active' && !options.outgoingRequest) {
-      create = '<section class="panel"><h2>Create a team</h2><p>' +
-        (assignment.maxTeamSize === 1
-          ? 'Create a one-student team and its private repository.'
-          : 'Your team starts with you. You can keep working alone or approve one partner later.') + '</p>' +
+      create = '<section class="panel"><h2>Create a team</h2>' +
+        (assignment.maxTeamSize === 1 ? '<p>Create a one-student team and its private repository.</p>' : '') +
         '<form method="post" action="' + options.basePath + '/assignments/' + assignment.slug + '/teams" class="stack">' +
         csrfField(options.csrf) + '<label for="team-name">Team name</label>' +
         '<input id="team-name" name="teamName" minlength="2" maxlength="40" required placeholder="e.g. ray-tracers">' +
-        '<label class="check-row"><input type="checkbox" name="confirm" value="yes" required> I understand this creates and assigns the team repository now.</label>' +
         '<button class="button" type="submit">Create team repository</button></form></section>';
     } else if (assignment.status !== 'open') {
       create = '<div class="notice notice-info">This assignment is closed.</div>';
@@ -279,7 +274,7 @@ function assignmentPage(options) {
           escapeHtml(team.displayName) + '</a></strong><br><span class="muted">' + escapeHtml(members) + ' · ' + team.members.length + '/2</span></div>' +
           (team.members.length < 2 ? '<a href="' + options.basePath + '/assignments/' + assignment.slug + '/teams/' + team.id + '">View team</a>' : statusLabel('full')) + '</li>';
       }).join('');
-      teams = '<section class="panel"><h2>Join an existing team</h2><p>Open a team and send a request. A current member must approve it.</p>' +
+      teams = '<section class="panel"><h2>Join an existing team</h2>' +
         (rows ? '<ul class="team-list">' + rows + '</ul>' : '<p class="muted">No teams have been created yet.</p>') + '</section>';
     }
     content = blocked + create + teams;
@@ -289,11 +284,7 @@ function assignmentPage(options) {
     title: assignment.title,
     body: '<p class="back-link"><a href="' + options.basePath + '/">← All assignments</a></p>' +
       '<section class="page-heading"><div class="section-heading"><div><p class="eyebrow">' + statusLabel(assignment.status) + '</p>' +
-      '<h1>' + escapeHtml(assignment.title) + '</h1></div></div>' +
-      '<p class="lede">Repository template: <code>' + escapeHtml(assignment.templateFullName) + '</code>. ' +
-      (assignment.maxTeamSize === 1
-        ? 'Every repository is a one-student team.'
-        : 'Every repository starts as a one-student team; you may approve one partner.') + '</p></section>' + content
+      '<h1>' + escapeHtml(assignment.title) + '</h1></div></div></section>' + content
   }));
 }
 

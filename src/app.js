@@ -288,13 +288,6 @@ function createRouter(overrides) {
     next();
   }
 
-  function requireChoiceConfirmation(req, res, next) {
-    if (req.body.confirm !== 'yes') {
-      return next(new util.AppError('Confirm the repository choice before creating it.', 400, 'choice_not_confirmed'));
-    }
-    next();
-  }
-
   function accessReady(workUnit, userId) {
     const member = workUnit && workUnit.members.find(function matchingMember(item) {
       return item.userId === userId;
@@ -442,7 +435,7 @@ function createRouter(overrides) {
     return res.send(views.assignmentPage(Object.assign(pageOptions(req), model)));
   }));
 
-  router.post('/assignments/:slug/teams', requireCsrf, requireUser, requireChoiceConfirmation, requireGithubActionAllowance, asyncRoute(async function createTeam(req, res) {
+  router.post('/assignments/:slug/teams', requireCsrf, requireUser, requireGithubActionAllowance, asyncRoute(async function createTeam(req, res) {
     const workUnit = await service.createWorkUnit(req.params.slug, req.currentUser.id, req.body.teamName);
     setFlash(req, accessReady(workUnit, req.currentUser.id) ? 'success' : (workUnit.repoStatus === 'ready' ? 'info' : 'error'),
       accessReady(workUnit, req.currentUser.id)

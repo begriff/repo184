@@ -15,6 +15,45 @@ function randomToken() {
   return util.base64Url(crypto.randomBytes(32));
 }
 
+const OAUTH_ATTEMPT_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_OAUTH_ATTEMPTS = 5;
+
+function liveOauthAttempts(session, now) {
+  const attempts = Array.isArray(session.oauthAttempts) ? session.oauthAttempts.slice() : [];
+  if (session.oauth) {
+    attempts.push(session.oauth);
+  }
+  return attempts.filter(function live(attempt) {
+    return attempt && attempt.state && attempt.verifier &&
+      typeof attempt.createdAt === 'number' && attempt.createdAt >= now - OAUTH_ATTEMPT_TTL_MS;
+  });
+}
+
+function addOauthAttempt(session, attempt) {
+  const attempts = liveOauthAttempts(session, Date.now());
+  attempts.push(attempt);
+  session.oauthAttempts = attempts.slice(-MAX_PENDING_OAUTH_ATTEMPTS);
+  delete session.oauth;
+}
+
+function consumeOauthAttempt(session, requestedState) {
+  const attempts = liveOauthAttempts(session, Date.now());
+  delete session.oauth;
+  let matchingIndex = -1;
+  attempts.forEach(function findMatch(attempt, index) {
+    if (matchingIndex === -1 && util.constantTimeEqual(requestedState, attempt.state)) {
+      matchingIndex = index;
+    }
+  });
+  const matching = matchingIndex === -1 ? null : attempts.splice(matchingIndex, 1)[0];
+  if (attempts.length) {
+    session.oauthAttempts = attempts;
+  } else {
+    delete session.oauthAttempts;
+  }
+  return matching;
+}
+
 function asyncRoute(handler) {
   return function wrapped(req, res, next) {
     Promise.resolve(handler(req, res, next)).catch(next);
@@ -369,19 +408,18 @@ function createRouter(overrides) {
       }
       const ip = req.ip || req.connection.remoteAddress || 'unknown';
       if (!oauthActionLimiter.take([
-        { key: 'oauth-ip:' + ip, limit: 200 },
-        { key: 'oauth-session:' + req.repo184Session.csrf, limit: 2 }
+        { key: 'oauth-ip:' + ip, limit: 200 }
       ])) {
         throw new util.AppError('Too many GitHub sign-ins were requested. Wait 15 minutes and try again.', 429, 'github_action_rate_limited');
       }
       const state = randomToken();
       const verifier = randomToken();
       const challenge = util.base64Url(crypto.createHash('sha256').update(verifier).digest());
-      req.repo184Session.oauth = {
+      addOauthAttempt(req.repo184Session, {
         state: state,
         verifier: verifier,
         createdAt: Date.now()
-      };
+      });
       return res.redirect(github.authorizationUrl(state, challenge));
     } catch (error) {
       return next(error);
@@ -389,13 +427,14 @@ function createRouter(overrides) {
   });
 
   router.get('/auth/github/callback', asyncRoute(async function githubCallback(req, res) {
-    const oauth = req.repo184Session.oauth;
-    delete req.repo184Session.oauth;
+    const oauth = consumeOauthAttempt(req.repo184Session, req.query.state);
+    if (!oauth) {
+      throw new util.AppError('GitHub sign-in expired or could not be verified. Please try again.', 400, 'oauth_state_invalid');
+    }
     if (req.query.error) {
       throw new util.AppError('GitHub sign-in was cancelled or denied.', 400, 'oauth_denied');
     }
-    if (!oauth || oauth.createdAt < Date.now() - (10 * 60 * 1000) ||
-        !util.constantTimeEqual(req.query.state, oauth.state) || !req.query.code) {
+    if (!req.query.code) {
       throw new util.AppError('GitHub sign-in expired or could not be verified. Please try again.', 400, 'oauth_state_invalid');
     }
     const userToken = await github.exchangeCode(String(req.query.code), oauth.verifier);

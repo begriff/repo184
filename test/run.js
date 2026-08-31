@@ -1103,6 +1103,84 @@ async function httpTests(testDirectory) {
   }
 }
 
+async function oauthRetryHttpTests(testDirectory) {
+  const config = configModule.loadConfig({
+    nodeEnv: 'development',
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    sessionSecret: 'oauth-retry-test-session-secret-more-than-32-characters',
+    adminPassword: 'local-admin',
+    dataFile: path.join(testDirectory, 'oauth-retry-http.json'),
+    devFakeGithub: false
+  });
+  const store = new storeModule.JsonStore(config.dataFile);
+  const github = new githubModule.FakeGitHubClient(config);
+  const service = new serviceModule.Repo184Service({ store: store, github: github, config: config });
+  const attempts = [];
+  const exchanges = [];
+  github.authorizationUrl = function authorizationUrl(state, challenge) {
+    attempts.push({ state: state, challenge: challenge });
+    return '/github/authorize/' + encodeURIComponent(state);
+  };
+  github.exchangeCode = async function exchangeCode(code, verifier) {
+    exchanges.push({ code: code, verifier: verifier });
+    return String(code);
+  };
+  github.getAuthenticatedUser = async function authenticatedUser(token) {
+    return github.getFakeUser(String(token));
+  };
+
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use('/repo', createRouter({ config: config, store: store, github: github, service: service }));
+  const server = await new Promise(function listen(resolve) {
+    const started = app.listen(0, '127.0.0.1', function ready() { resolve(started); });
+  });
+  try {
+    const retryJar = {};
+    for (let index = 0; index < 3; index += 1) {
+      const response = await httpRequest(server, retryJar, '/repo/auth/github');
+      assert.strictEqual(response.status, 302, 'ordinary OAuth retries must not be rate limited');
+    }
+    let response = await httpRequest(server, retryJar,
+      '/repo/auth/github/callback?state=' + encodeURIComponent(attempts[0].state) + '&code=oauth-retry-one');
+    assert.strictEqual(response.status, 302, 'an earlier pending OAuth tab must remain valid');
+    assert.strictEqual(exchanges[0].code, 'oauth-retry-one');
+    assert(exchanges[0].verifier, 'the matching PKCE verifier must be retained');
+
+    const cancelJar = {};
+    const cancelAttemptOffset = attempts.length;
+    response = await httpRequest(server, cancelJar, '/repo/auth/github');
+    assert.strictEqual(response.status, 302);
+    response = await httpRequest(server, cancelJar, '/repo/auth/github');
+    assert.strictEqual(response.status, 302);
+    const cancelledState = attempts[cancelAttemptOffset].state;
+    const survivingState = attempts[cancelAttemptOffset + 1].state;
+    response = await httpRequest(server, cancelJar,
+      '/repo/auth/github/callback?state=' + encodeURIComponent(cancelledState) + '&error=access_denied');
+    assert.strictEqual(response.status, 400);
+    assert(response.body.indexOf('cancelled or denied') !== -1);
+    response = await httpRequest(server, cancelJar,
+      '/repo/auth/github/callback?state=' + encodeURIComponent(survivingState) + '&code=oauth-retry-two');
+    assert.strictEqual(response.status, 302, 'cancelling one OAuth tab must not invalidate another');
+
+    const boundedJar = {};
+    const boundedAttemptOffset = attempts.length;
+    for (let index = 0; index < 6; index += 1) {
+      response = await httpRequest(server, boundedJar, '/repo/auth/github');
+      assert.strictEqual(response.status, 302);
+    }
+    response = await httpRequest(server, boundedJar,
+      '/repo/auth/github/callback?state=' + encodeURIComponent(attempts[boundedAttemptOffset].state) + '&code=evicted-attempt');
+    assert.strictEqual(response.status, 400, 'only the five newest OAuth attempts should remain pending');
+    response = await httpRequest(server, boundedJar,
+      '/repo/auth/github/callback?state=' + encodeURIComponent(attempts[boundedAttemptOffset + 1].state) + '&code=oauth-retry-three');
+    assert.strictEqual(response.status, 302, 'evicting the oldest OAuth attempt must preserve newer attempts');
+  } finally {
+    await new Promise(function close(resolve) { server.close(resolve); });
+  }
+}
+
 async function productionBoundaryTests(testDirectory) {
   assert.throws(function invalidEnvironment() {
     configModule.validateBaseConfig(configModule.loadConfig({ nodeEnv: 'prod' }));
@@ -1187,6 +1265,7 @@ async function run() {
     githubActionLimiterTests();
     await githubTransportTests();
     await httpTests(testDirectory);
+    await oauthRetryHttpTests(testDirectory);
     await productionBoundaryTests(testDirectory);
     console.log('Repo184 tests passed.');
   } finally {

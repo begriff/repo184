@@ -284,9 +284,8 @@ function dashboardPage(options) {
     }
     return '<article class="assignment-row"><div class="assignment-title"><h2><a href="' + options.basePath + '/assignments/' + assignment.slug + '">' +
       escapeHtml(assignment.title) + '</a></h2>' + statusLabel(assignment.status) + '</div>' +
-      '<p class="muted">Template: <code>' + escapeHtml(assignment.templateFullName) + '</code>' +
-      (assignment.generateWriteupRepo ? ' · Write-up template: <code>' + escapeHtml(assignment.writeupTemplateFullName) + '</code>' : '') + ' · ' +
-      (assignment.maxTeamSize === 1 ? 'Team size: 1 student' : 'Team size: up to 2 students') + '</p>' + detail + '</article>';
+      '<p class="muted">' + (assignment.maxTeamSize === 1 ? 'Team size: 1 student' : 'Team size: up to 2 students') +
+      '</p>' + detail + '</article>';
   }).join('');
 
   return page(Object.assign({}, options, {

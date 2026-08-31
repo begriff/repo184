@@ -324,6 +324,11 @@ async function serviceTests(testDirectory) {
     dashboard: bobDashboardWithError
   });
   assert(bobDashboardHtml.indexOf('verification error') !== -1);
+  assert.strictEqual(bobDashboardHtml.indexOf(assignment.templateFullName), -1,
+    'student assignment cards must not expose the code template repository');
+  assert.strictEqual(bobDashboardHtml.indexOf(assignment.writeupTemplateFullName), -1,
+    'student assignment cards must not expose the write-up template repository');
+  assert(bobDashboardHtml.indexOf('Team size: up to 2 students') !== -1);
   assert.strictEqual(bobDashboardHtml.indexOf(bobReplacement.repoHtmlUrl), -1,
     'a repository with a verification error must not be presented as ready to open');
   const pendingDashboard = util.clone(bobDashboardWithError);

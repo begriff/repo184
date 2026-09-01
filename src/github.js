@@ -608,7 +608,7 @@ class GitHubClient {
       response = await this.appRequest(endpoint, 'POST', {
         source: {
           branch: branch || 'main',
-          path: '/docs'
+          path: '/'
         }
       });
       requireSuccess(response, [201, 409], 'enable GitHub Pages for the write-up repository');
@@ -623,7 +623,7 @@ class GitHubClient {
       htmlUrl: response.body && response.body.html_url
         ? response.body.html_url
         : 'https://' + this.config.githubOrg.toLowerCase() + '.github.io/' + repoName + '/',
-      source: response.body && response.body.source ? response.body.source : { branch: branch || 'main', path: '/docs' }
+      source: response.body && response.body.source ? response.body.source : { branch: branch || 'main', path: '/' }
     };
   }
 
@@ -861,7 +861,7 @@ class FakeGitHubClient {
     }
     repository.pages = {
       htmlUrl: 'https://' + this.config.githubOrg.toLowerCase() + '.github.io/' + repoName + '/',
-      source: { branch: branch || 'main', path: '/docs' }
+      source: { branch: branch || 'main', path: '/' }
     };
     return Object.assign({}, repository.pages);
   }

@@ -191,7 +191,7 @@ function repositoryPanel(options, workUnit, allowRetry, adminMode) {
         writeupContent += '<p class="field-error"><strong>GitHub Pages setup failed:</strong> ' +
           escapeHtml(workUnit.writeupPagesError) + '</p>';
       } else if (workUnit.writeupPagesStatus !== 'ready') {
-        writeupContent += '<p>GitHub Pages is being enabled from the <code>docs</code> folder.</p>';
+        writeupContent += '<p>GitHub Pages is being enabled from the repository root.</p>';
       }
     } else {
       writeupContent = '<p>GitHub is creating the public write-up repository. Refresh this page shortly.</p>';

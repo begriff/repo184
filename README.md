@@ -240,9 +240,9 @@ provisioning stops with an error instead of choosing a different name.
 An assignment can optionally use a second, sanitized write-up template. When
 enabled, Repo184 also creates a public `<repository-prefix>-<team-name>-writeup`
 repository, grants the same students push access, and enables GitHub Pages from
-the `docs` directory on the generated repository's default branch. Put an
-`index.html` in that directory. If Actions are disabled for the organization,
-also put a `.nojekyll` file in `docs` so Pages can deploy the static files without
+the root of the generated repository's default branch. Put an `index.html` in
+the repository root. If Actions are disabled for the organization, also put a
+root-level `.nojekyll` file in the template so Pages can deploy the static files without
 the built-in Jekyll workflow. Never place solutions, starter code that should
 remain private, credentials, or other restricted course material in the write-up
 template because every generated write-up repository is public.
@@ -448,8 +448,8 @@ from the operational JSON snapshots.
 - [ ] Staff have checked how many students still need organization invitations
       and have a stagger plan for invitation and API-write limits.
 - [ ] Each template is sanitized, marked as a template, and tested.
-- [ ] Each enabled write-up template contains `docs/index.html` and, when Actions
-      are disabled, `docs/.nojekyll`.
+- [ ] Each enabled write-up template contains a root-level `index.html` and, when
+      Actions are disabled, a root-level `.nojekyll`.
 - [ ] Staff understand that Repo184 pins each template's immutable repository
       ID; a renamed or replaced template must be deliberately reconfigured.
 - [ ] `.env` contains only production values, `DEV_FAKE_GITHUB=0`, an

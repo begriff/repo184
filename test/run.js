@@ -958,7 +958,7 @@ async function githubTransportTests() {
   const pages = await pagesClient.ensurePages('hw1-team-writeup', 'main');
   assert.strictEqual(pages.htmlUrl, 'https://cal-cs184-student.github.io/hw1-team-writeup/');
   assert.deepStrictEqual(pagesCalls.map(function method(call) { return call.method; }), ['GET', 'POST']);
-  assert.deepStrictEqual(pagesCalls[1].body, { source: { branch: 'main', path: '/docs' } });
+  assert.deepStrictEqual(pagesCalls[1].body, { source: { branch: 'main', path: '/' } });
 
   const deletionClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
   const deletionCalls = [];

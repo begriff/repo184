@@ -823,6 +823,7 @@ class Repo184Service {
     if (!workUnit || !workUnit.writeupEnabled) {
       return;
     }
+    let writeupDefaultBranch = 'main';
     try {
       if (workUnit.writeupTemplateProvenance === 'identity_mismatch' ||
           (workUnit.writeupTemplateProvenance === 'mismatch' && workUnit.writeupRepoId === null)) {
@@ -897,6 +898,7 @@ class Repo184Service {
       if (repository.private) {
         throw new util.AppError('GitHub did not create a public write-up repository. Staff intervention is required.', 502, 'writeup_repository_not_public');
       }
+      writeupDefaultBranch = repository.default_branch || 'main';
       const fields = writeupRepoFields(repository);
       await this.store.transaction(function writeupReady(draft) {
         const unit = findWorkUnit(draft, workUnitId);
@@ -939,7 +941,7 @@ class Repo184Service {
     try {
       const pages = await this.github.ensurePages(
         current.writeupRepoName,
-        (await this.github.getRepository(current.writeupRepoName)).default_branch || 'main'
+        writeupDefaultBranch
       );
       await this.store.transaction(function pagesReady(draft) {
         const unit = findWorkUnit(draft, workUnitId);

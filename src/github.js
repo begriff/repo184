@@ -14,6 +14,7 @@ const MAX_WRITE_REQUESTS_PER_MINUTE = 60;
 const MAX_WRITE_REQUESTS_PER_HOUR = 400;
 const MAX_NORMAL_WRITE_REQUESTS_PER_MINUTE = 50;
 const MAX_NORMAL_WRITE_REQUESTS_PER_HOUR = 320;
+const PAGES_BRANCH_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000];
 
 class GitHubError extends Error {
   constructor(message, statusCode, responseBody) {
@@ -116,6 +117,23 @@ function requireSuccess(response, expected, action) {
   throw new GitHubError('GitHub could not ' + action + ' (' + response.status + '): ' + detail, response.status, response.body);
 }
 
+function wait(milliseconds) {
+  return new Promise(function pause(resolve) {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function pagesBranchIsPending(response) {
+  if (!response || response.status !== 422) {
+    return false;
+  }
+  const message = response.body && response.body.message
+    ? String(response.body.message).toLowerCase()
+    : '';
+  return message.indexOf('branch must exist') !== -1 ||
+    (message.indexOf('branch') !== -1 && message.indexOf('does not exist') !== -1);
+}
+
 class GitHubClient {
   constructor(config) {
     this.config = config;
@@ -126,6 +144,7 @@ class GitHubClient {
     this.priorityApiRequestQueue = [];
     this.apiBackoffUntil = 0;
     this.writeRequestTimes = [];
+    this.pagesBranchRetryDelays = PAGES_BRANCH_RETRY_DELAYS_MS.slice();
   }
 
   rateLimitError() {
@@ -602,15 +621,46 @@ class GitHubClient {
   }
 
   async ensurePages(repoName, branch) {
+    const sourceBranch = branch || 'main';
     const endpoint = '/repos/' + encodeURIComponent(this.config.githubOrg) + '/' + encodeURIComponent(repoName) + '/pages';
     let response = await this.appRequest(endpoint, 'GET');
     if (response.status === 404) {
       response = await this.appRequest(endpoint, 'POST', {
         source: {
-          branch: branch || 'main',
+          branch: sourceBranch,
           path: '/'
         }
       });
+      if (pagesBranchIsPending(response)) {
+        const branchEndpoint = '/repos/' + encodeURIComponent(this.config.githubOrg) + '/' +
+          encodeURIComponent(repoName) + '/branches/' + encodeURIComponent(sourceBranch);
+        let branchResponse = null;
+        for (let attempt = 0; attempt <= this.pagesBranchRetryDelays.length; attempt += 1) {
+          branchResponse = await this.appRequest(branchEndpoint, 'GET');
+          if (branchResponse.status === 200) {
+            break;
+          }
+          if (branchResponse.status !== 404) {
+            requireSuccess(branchResponse, 200, 'check the write-up repository branch');
+          }
+          if (attempt < this.pagesBranchRetryDelays.length) {
+            await wait(this.pagesBranchRetryDelays[attempt]);
+          }
+        }
+        if (!branchResponse || branchResponse.status !== 200) {
+          throw new GitHubError(
+            'GitHub is still creating the ' + sourceBranch + ' branch for the write-up repository. Retry GitHub sync shortly.',
+            503,
+            branchResponse && branchResponse.body
+          );
+        }
+        response = await this.appRequest(endpoint, 'POST', {
+          source: {
+            branch: sourceBranch,
+            path: '/'
+          }
+        });
+      }
       requireSuccess(response, [201, 409], 'enable GitHub Pages for the write-up repository');
       if (response.status === 409) {
         response = await this.appRequest(endpoint, 'GET');
@@ -623,7 +673,7 @@ class GitHubClient {
       htmlUrl: response.body && response.body.html_url
         ? response.body.html_url
         : 'https://' + this.config.githubOrg.toLowerCase() + '.github.io/' + repoName + '/',
-      source: response.body && response.body.source ? response.body.source : { branch: branch || 'main', path: '/' }
+      source: response.body && response.body.source ? response.body.source : { branch: sourceBranch, path: '/' }
     };
   }
 

@@ -960,6 +960,35 @@ async function githubTransportTests() {
   assert.deepStrictEqual(pagesCalls.map(function method(call) { return call.method; }), ['GET', 'POST']);
   assert.deepStrictEqual(pagesCalls[1].body, { source: { branch: 'main', path: '/' } });
 
+  const delayedPagesClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
+  delayedPagesClient.pagesBranchRetryDelays = [0, 0];
+  const delayedPagesCalls = [];
+  let branchReads = 0;
+  let pagesWrites = 0;
+  delayedPagesClient.appRequest = async function delayedPagesRequest(requestPath, method, body) {
+    delayedPagesCalls.push({ path: requestPath, method: method, body: body });
+    if (requestPath.indexOf('/branches/main') !== -1) {
+      branchReads += 1;
+      return branchReads === 1
+        ? { status: 404, body: { message: 'Not Found' } }
+        : { status: 200, body: { name: 'main' } };
+    }
+    if (method === 'GET') {
+      return { status: 404, body: { message: 'Not Found' } };
+    }
+    pagesWrites += 1;
+    return pagesWrites === 1
+      ? { status: 422, body: { message: 'The main branch must exist before GitHub Pages can be built.' } }
+      : { status: 201, body: { html_url: 'https://cal-cs184-student.github.io/delayed-writeup/' } };
+  };
+  const delayedPages = await delayedPagesClient.ensurePages('delayed-writeup', 'main');
+  assert.strictEqual(delayedPages.htmlUrl, 'https://cal-cs184-student.github.io/delayed-writeup/');
+  assert.deepStrictEqual(delayedPagesCalls.map(function method(call) { return call.method; }),
+    ['GET', 'POST', 'GET', 'GET', 'POST']);
+  assert.strictEqual(delayedPagesCalls[2].path,
+    '/repos/cal-cs184-student/delayed-writeup/branches/main');
+  assert.deepStrictEqual(delayedPagesCalls[4].body, { source: { branch: 'main', path: '/' } });
+
   const deletionClient = new githubModule.GitHubClient({ githubOrg: 'cal-cs184-student' });
   const deletionCalls = [];
   deletionClient.appRequest = async function deletionRequest(requestPath, method, body, options) {

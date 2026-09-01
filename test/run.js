@@ -346,6 +346,25 @@ async function serviceTests(testDirectory) {
   assert(pendingDashboardHtml.indexOf('https://github.com/orgs/cal-cs184-student/invitation') !== -1);
   assert.strictEqual(pendingDashboardHtml.indexOf('/org/invite'), -1,
     'a pending invitation must be accepted rather than cancelled and recreated');
+  const pendingAssignmentHtml = views.assignmentPage({
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    githubOrg: config.githubOrg,
+    courseHomeworkUrl: '/fa26/hw/',
+    csrf: 'test-csrf',
+    user: pendingDashboard.user,
+    assignment: assignment,
+    workUnit: null,
+    outgoingRequest: null,
+    resolvedRequest: null,
+    teams: []
+  });
+  assert(pendingAssignmentHtml.indexOf('Accept invitation on GitHub') !== -1,
+    'a direct assignment page must explain why repository creation is unavailable');
+  assert(pendingAssignmentHtml.indexOf('https://github.com/orgs/cal-cs184-student/invitation') !== -1);
+  assert.strictEqual(pendingAssignmentHtml.indexOf('Create a team'), -1);
+  assert(pendingAssignmentHtml.indexOf('Join an existing team') !== -1,
+    'two-student assignments may remain visible while organization access is pending');
   const absentDashboard = util.clone(pendingDashboard);
   absentDashboard.user.membershipState = 'absent';
   const absentDashboardHtml = views.dashboardPage({

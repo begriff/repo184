@@ -299,6 +299,7 @@ function dashboardPage(options) {
 
 function assignmentPage(options) {
   const assignment = options.assignment;
+  const organizationNotice = options.user.membershipState === 'active' ? '' : membershipNotice(options);
   let content;
   if (options.workUnit) {
     content = workUnitPanel(options, options.workUnit, true, false);
@@ -336,7 +337,7 @@ function assignmentPage(options) {
     title: assignment.title,
     body: '<p class="back-link"><a href="' + options.basePath + '/">← All assignments</a></p>' +
       '<section class="page-heading"><div class="section-heading"><div><p class="eyebrow">' + statusLabel(assignment.status) + '</p>' +
-      '<h1>' + escapeHtml(assignment.title) + '</h1></div></div></section>' + content
+      '<h1>' + escapeHtml(assignment.title) + '</h1></div></div></section>' + organizationNotice + content
   }));
 }
 

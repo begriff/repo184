@@ -343,6 +343,7 @@ function assignmentPage(options) {
 
 function teamPage(options) {
   const team = options.workUnit;
+  const organizationNotice = options.user.membershipState === 'active' ? '' : membershipNotice(options);
   let action = '';
   if (!options.isMember) {
     if (options.pendingRequest) {
@@ -350,7 +351,7 @@ function teamPage(options) {
     } else if (options.canRequest) {
       action = '<form method="post" action="' + options.basePath + '/assignments/' + options.assignment.slug + '/teams/' + team.id + '/request">' +
         csrfField(options.csrf) + '<button class="button" type="submit">Request to join this team</button></form>';
-    } else if (options.requestBlockReason) {
+    } else if (options.requestBlockReason && options.user.membershipState === 'active') {
       action = '<div class="notice notice-info">' + escapeHtml(options.requestBlockReason) + '</div>';
     }
   } else {
@@ -361,7 +362,7 @@ function teamPage(options) {
     title: team.displayName,
     body: '<p class="back-link"><a href="' + options.basePath + '/assignments/' + options.assignment.slug + '">← ' + escapeHtml(options.assignment.title) + '</a></p>' +
       '<section class="page-heading"><p class="eyebrow">Team</p><h1>' + escapeHtml(team.displayName) + '</h1>' +
-      '<p class="lede">' + team.members.length + ' of ' + options.assignment.maxTeamSize + ' places filled.</p></section>' + action +
+      '<p class="lede">' + team.members.length + ' of ' + options.assignment.maxTeamSize + ' places filled.</p></section>' + organizationNotice + action +
       '<section class="panel"><h2>Members</h2>' + memberList(team) +
       joinRequests(options, team, options.isMember, false) + '</section>' +
       (options.isMember ? repositoryPanel(options, team, true, false) : '')

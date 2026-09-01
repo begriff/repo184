@@ -365,6 +365,25 @@ async function serviceTests(testDirectory) {
   assert.strictEqual(pendingAssignmentHtml.indexOf('Create a team'), -1);
   assert(pendingAssignmentHtml.indexOf('Join an existing team') !== -1,
     'two-student assignments may remain visible while organization access is pending');
+  const pendingTeamHtml = views.teamPage({
+    basePath: '/repo',
+    baseUrl: 'http://127.0.0.1/repo',
+    githubOrg: config.githubOrg,
+    courseHomeworkUrl: '/fa26/hw/',
+    csrf: 'test-csrf',
+    user: pendingDashboard.user,
+    assignment: assignment,
+    workUnit: team,
+    isMember: false,
+    pendingRequest: null,
+    canRequest: false,
+    requestBlockReason: 'Your course organization membership must be active before joining a team.'
+  });
+  assert(pendingTeamHtml.indexOf('Accept invitation on GitHub') !== -1,
+    'a direct team page must explain how to activate joining');
+  assert.strictEqual(pendingTeamHtml.indexOf('Request to join this team'), -1);
+  assert.strictEqual(pendingTeamHtml.indexOf('Your course organization membership must be active'), -1,
+    'the actionable invitation notice should replace the generic membership warning');
   const absentDashboard = util.clone(pendingDashboard);
   absentDashboard.user.membershipState = 'absent';
   const absentDashboardHtml = views.dashboardPage({

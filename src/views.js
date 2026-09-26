@@ -424,6 +424,15 @@ function adminWorkUnit(options, workUnit) {
     return '<li>@' + escapeHtml(item.user.login) + ' ' + statusLabel(item.accessStatus) + ' ' + retry + ' ' + remove +
       (item.accessError ? '<div class="field-error">' + escapeHtml(item.accessError) + '</div>' : '') + '</li>';
   }).join('') + '</ul>';
+  const addMember = active && workUnit.kind === 'team' && workUnit.members.length < workUnit.assignment.maxTeamSize
+    ? '<section><h4>Add existing Repo184 student</h4>' +
+      '<p class="form-note">The student must have signed in to Repo184 and accepted the organization invitation.</p>' +
+      '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/members" class="stack compact">' +
+      csrfField(options.csrf) + '<label>GitHub username</label>' +
+      '<input name="githubLogin" list="repo184-users" required maxlength="39" pattern="[A-Za-z0-9-]{1,39}" placeholder="student-login" autocomplete="off">' +
+      '<label class="check-row"><input type="checkbox" name="confirm" value="add" required> Grant this student push access to this team’s repositories.</label>' +
+      '<button type="submit" class="button secondary small">Add member</button></form></section>'
+    : '';
   const release = deleting ? '' : (workUnit.lifecycle !== 'released'
     ? '<form method="post" action="' + options.basePath + '/admin/work-units/' + workUnit.id + '/release" class="release-form">' +
       csrfField(options.csrf) + '<label class="check-row"><input type="checkbox" name="confirm" value="release" required> Preserve the repositories, revoke direct student access, and let all members choose again.</label>' +
@@ -448,10 +457,20 @@ function adminWorkUnit(options, workUnit) {
   return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' || deleting || pending ? ' open' : '') + '><summary>' +
     '<strong>' + escapeHtml(workUnit.assignment.slug) + ' · ' + escapeHtml(workUnit.displayName) + '</strong> ' + statusLabel(summaryStatus) +
     ' <span class="muted">' + escapeHtml(workUnit.repoName) + '</span></summary><div class="admin-unit-body">' + rename +
-    '<h4>Members</h4>' + members + (active ? pending : '') + (deleting ? '' : repositoryPanel(options, workUnit, active, true)) + release + deletion + '</div></details>';
+    '<h4>Members</h4>' + members + addMember + (active ? pending : '') + (deleting ? '' : repositoryPanel(options, workUnit, active, true)) + release + deletion + '</div></details>';
 }
 
 function adminPage(options) {
+  const knownUsers = Object.keys(options.adminView.users || {}).map(function userById(userId) {
+    return options.adminView.users[userId];
+  }).filter(function activeUser(user) {
+    return user && user.membershipState === 'active';
+  }).sort(function byLogin(left, right) {
+    return left.login.localeCompare(right.login);
+  }).map(function userOption(user) {
+    return '<option value="' + escapeHtml(user.login) + '"></option>';
+  }).join('');
+  const userSuggestions = '<datalist id="repo184-users">' + knownUsers + '</datalist>';
   const assignments = options.adminView.assignments.map(function assignment(item) {
     const archiveAction = item.archived ? 'unarchive' : 'archive';
     const archiveLabel = item.archived ? 'Unarchive assignment' : 'Archive assignment';
@@ -475,7 +494,7 @@ function adminPage(options) {
   const units = options.adminView.workUnits.map(function unit(item) { return adminWorkUnit(options, item); }).join('');
   const audit = options.adminView.audit.map(function event(item) {
     const details = item.details || {};
-    const detailValues = [details.assignmentSlug || details.slug, details.teamName, details.repoName, details.writeupRepoName].filter(function present(value, index, values) {
+    const detailValues = [details.assignmentSlug || details.slug, details.teamName, details.login, details.repoName, details.writeupRepoName].filter(function present(value, index, values) {
       return value && values.indexOf(value) === index;
     });
     return '<tr><td><time>' + escapeHtml(new Date(item.createdAt).toLocaleString('en-US')) + '</time></td><td>' + escapeHtml(item.actor) + '</td><td><code>' + escapeHtml(item.action) + '</code></td><td>' + escapeHtml(detailValues.join(' · ')) + '</td></tr>';
@@ -512,7 +531,7 @@ function adminPage(options) {
       '<p class="lede">Configure assignment templates and inspect repository/team state.</p></section>' +
       '<section class="panel"><h2>Add assignment</h2>' + assignmentForm(options, null) + '</section>' +
       '<section class="admin-section"><h2>Assignments</h2>' + (assignments || '<p class="muted">No assignments configured.</p>') + '</section>' +
-      '<section class="admin-section"><h2>Teams and repositories</h2>' + (units || '<p class="muted">No repositories created.</p>') + '</section>' +
+      '<section class="admin-section"><h2>Teams and repositories</h2>' + userSuggestions + (units || '<p class="muted">No repositories created.</p>') + '</section>' +
       '<section class="admin-section" id="activity-log"><h2>Recent activity</h2>' + auditSearch + auditSummary +
       '<div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>' +
       (audit || '<tr><td colspan="4">No matching activity.</td></tr>') + '</tbody></table></div>' + auditPages + '</section>'

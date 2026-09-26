@@ -367,6 +367,10 @@ The staff console supports these distinct operations:
   URLs without changing teams, repositories, or its open/closed setting.
 - **Retry failed/pending setups** retries every active team in that assignment
   whose repository, Pages site, or member access is not ready.
+- **Add existing Repo184 student** adds a student directly to a non-full team,
+  cancels their pending requests for that assignment, and synchronizes access to
+  the team's code and optional write-up repositories. The student must have
+  signed in to Repo184 previously and have active organization membership.
 - **Release assignment claim** preserves the repositories, revokes direct
   student access, and allows those students to choose another team.
 - **Delete team and repositories** permanently deletes the managed private code

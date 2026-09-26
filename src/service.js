@@ -1164,6 +1164,103 @@ class Repo184Service {
     });
   }
 
+  async addTeamMemberByLogin(workUnitId, login, actor) {
+    const requestedLogin = String(login || '').trim().replace(/^@/, '');
+    if (!/^[A-Za-z0-9-]{1,39}$/.test(requestedLogin)) {
+      throw new util.AppError('Enter a valid GitHub username.', 400, 'invalid_username');
+    }
+
+    const before = await this.store.snapshot();
+    const knownUser = Object.keys(before.users).map(function userById(userId) {
+      return before.users[userId];
+    }).find(function matchingLogin(user) {
+      return user && String(user.login).toLowerCase() === requestedLogin.toLowerCase();
+    });
+    if (!knownUser) {
+      throw new util.AppError('That GitHub user has not signed in to Repo184 yet.', 404, 'user_not_registered');
+    }
+
+    let activeUser;
+    try {
+      activeUser = await this.ensureActiveMembership(knownUser.id);
+    } catch (error) {
+      if (error && error.code === 'membership_inactive') {
+        throw new util.AppError('That student must accept the course organization invitation before being added.', 409, 'membership_inactive');
+      }
+      throw error;
+    }
+
+    const service = this;
+    return this.withWorkUnitLock(workUnitId, async function addMemberLocked() {
+      const addedUserId = await service.store.transaction(function addMember(state) {
+        const workUnit = findWorkUnit(state, workUnitId);
+        const assignment = workUnit && findAssignment(state, workUnit.assignmentId);
+        if (!workUnit || !assignment || !isActiveWorkUnit(workUnit) || workUnit.kind !== 'team') {
+          throw new util.AppError('Team not found.', 404, 'team_not_found');
+        }
+        const user = service.requireActiveUser(state, activeUser.id);
+        if (workUnit.members.some(function existingMember(item) { return item.userId === user.id; })) {
+          throw new util.AppError('That student is already a member of this team.', 409, 'already_team_member');
+        }
+        if (workUnit.members.length >= assignment.maxTeamSize) {
+          throw new util.AppError('This team is already full.', 409, 'team_full');
+        }
+        const alreadyClaimed = state.workUnits.some(function membership(unit) {
+          return claimsAssignment(unit) && unit.assignmentId === assignment.id && unit.members.some(function member(item) {
+            return item.userId === user.id;
+          });
+        });
+        if (alreadyClaimed) {
+          throw new util.AppError('That student already has a repository for this assignment.', 409, 'already_assigned');
+        }
+
+        const now = util.nowIso();
+        let cancelledRequestCount = 0;
+        workUnit.members.push({
+          userId: user.id,
+          role: 'member',
+          accessStatus: 'pending',
+          accessError: '',
+          joinedAt: now
+        });
+        state.workUnits.forEach(function cancelPendingRequests(unit) {
+          if (!isActiveWorkUnit(unit) || unit.assignmentId !== assignment.id) {
+            return;
+          }
+          unit.requests.forEach(function cancelRequest(item) {
+            if (item.userId === user.id && item.status === 'pending') {
+              item.status = 'cancelled';
+              item.resolvedAt = now;
+              item.resolvedBy = actor;
+              cancelledRequestCount += 1;
+            }
+          });
+        });
+        if (workUnit.members.length >= assignment.maxTeamSize) {
+          workUnit.requests.forEach(function rejectRemaining(item) {
+            if (item.status === 'pending') {
+              item.status = 'rejected';
+              item.resolvedAt = now;
+              item.resolvedBy = 'team-full';
+            }
+          });
+        }
+        workUnit.updatedAt = now;
+        addAudit(state, actor, 'team.member_added_by_admin', {
+          workUnitId: workUnit.id,
+          assignmentSlug: assignment.slug,
+          teamName: workUnit.displayName,
+          userId: user.id,
+          login: user.login,
+          cancelledRequestCount: cancelledRequestCount
+        });
+        return user.id;
+      });
+      await service.performSyncMemberAccess(workUnitId, addedUserId);
+      return service.getWorkUnit(workUnitId);
+    });
+  }
+
   async resolveJoinRequest(requestId, actorId, decision, isAdmin) {
     const before = await this.store.snapshot();
     const beforeRequest = findRequest(before, requestId);

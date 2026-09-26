@@ -617,6 +617,9 @@ async function adminControlServiceTests(testDirectory) {
   await store.init();
   const student = await addUser(service, github, 'admin-tools-student', 'active');
   const secondStudent = await addUser(service, github, 'admin-tools-second', 'active');
+  const manualOwner = await addUser(service, github, 'admin-tools-owner', 'active');
+  const manualStudent = await addUser(service, github, 'admin-tools-added', 'active');
+  const pendingStudent = await addUser(service, github, 'admin-tools-pending', 'pending');
   const assignment = await service.createAssignment({
     slug: 'admin-hw',
     title: 'Admin Homework',
@@ -653,6 +656,31 @@ async function adminControlServiceTests(testDirectory) {
   }), false);
 
   const team = await service.createWorkUnit('admin-hw', student.id, 'Delete Test');
+  const manualTeam = await service.createWorkUnit('admin-hw', manualOwner.id, 'Manual Add');
+  await expectError(service.addTeamMemberByLogin(manualTeam.id, 'not-seen-before', 'admin'), 'user_not_registered');
+  await expectError(service.addTeamMemberByLogin(manualTeam.id, pendingStudent.login, 'admin'), 'membership_inactive');
+  const pendingManualRequest = await service.requestToJoin('admin-hw', manualTeam.id, manualStudent.id);
+  const manuallyPaired = await service.addTeamMemberByLogin(manualTeam.id, '@' + manualStudent.login, 'admin');
+  assert.strictEqual(manuallyPaired.members.length, 2);
+  assert.strictEqual(manuallyPaired.members[1].accessStatus, 'ready');
+  assert.strictEqual(Boolean(github.repositories[manualTeam.repoName].collaborators[manualStudent.login]), true);
+  assert.strictEqual(Boolean(github.repositories[manualTeam.writeupRepoName].collaborators[manualStudent.login]), true);
+  const manualAddState = await store.snapshot();
+  const savedManualRequest = manualAddState.workUnits.find(function matchingUnit(item) {
+    return item.id === manualTeam.id;
+  }).requests.find(function matchingRequest(item) {
+    return item.id === pendingManualRequest.id;
+  });
+  assert.strictEqual(savedManualRequest.status, 'cancelled');
+  const manualAddAudit = manualAddState.audit.find(function matchingAudit(item) {
+    return item.action === 'team.member_added_by_admin' && item.details.workUnitId === manualTeam.id;
+  });
+  assert(manualAddAudit);
+  assert.strictEqual(manualAddAudit.details.login, manualStudent.login);
+  assert.strictEqual(manualAddAudit.details.cancelledRequestCount, 1);
+  await expectError(service.addTeamMemberByLogin(manualTeam.id, manualStudent.login, 'admin'), 'already_team_member');
+  await expectError(service.addTeamMemberByLogin(manualTeam.id, secondStudent.login, 'admin'), 'team_full');
+  await expectError(service.addTeamMemberByLogin(team.id, manualStudent.login, 'admin'), 'already_assigned');
   await service.setAssignmentArchived(assignment.id, true, 'admin');
   assert.strictEqual(await service.getStudentWorkUnit(team.id, student.id), null);
   await service.setAssignmentArchived(assignment.id, false, 'admin');
@@ -1058,7 +1086,7 @@ async function httpTests(testDirectory) {
     title: 'Homework 0',
     template: 'cal-cs184-student/hw0-template',
     repoPrefix: 'hw0',
-    maxTeamSize: '1',
+    maxTeamSize: '2',
     status: 'open'
   }, 'admin');
 
@@ -1110,6 +1138,10 @@ async function httpTests(testDirectory) {
     response = await httpRequest(server, jar, '/repo/');
     assert(response.body.indexOf('Open code repository') !== -1);
 
+    const addedStudentJar = {};
+    response = await httpRequest(server, addedStudentJar, '/repo/auth/dev?user=http-added-student');
+    assert.strictEqual(response.status, 302);
+
     response = await httpRequest(server, jar, '/repo/admin');
     assert.strictEqual(response.status, 200);
     const adminCsrf = csrfFrom(response.body);
@@ -1124,8 +1156,29 @@ async function httpTests(testDirectory) {
     assert(response.body.indexOf('Generate a public write-up repository') !== -1);
     assert(response.body.indexOf('Archive assignment') !== -1);
     assert(response.body.indexOf('Delete team and repositories') !== -1);
+    assert(response.body.indexOf('Add existing Repo184 student') !== -1);
+    assert(response.body.indexOf('name="githubLogin"') !== -1);
+    assert(response.body.indexOf('value="http-added-student"') !== -1);
     assert(response.body.indexOf('name="auditQuery"') !== -1);
     const staffCsrf = csrfFrom(response.body);
+    let httpWorkUnit = (await store.snapshot()).workUnits[0];
+
+    response = await httpRequest(server, jar, '/repo/admin/work-units/' + httpWorkUnit.id + '/members', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf, githubLogin: 'http-added-student', confirm: 'wrong' })
+    });
+    assert.strictEqual(response.status, 400);
+    assert.strictEqual((await service.getWorkUnit(httpWorkUnit.id)).members.length, 1);
+
+    response = await httpRequest(server, jar, '/repo/admin/work-units/' + httpWorkUnit.id + '/members', {
+      method: 'POST',
+      body: encodeForm({ csrf: staffCsrf, githubLogin: 'http-added-student', confirm: 'add' })
+    });
+    assert.strictEqual(response.status, 302);
+    httpWorkUnit = await service.getWorkUnit(httpWorkUnit.id);
+    assert.strictEqual(httpWorkUnit.members.length, 2);
+    assert.strictEqual(httpWorkUnit.members[1].accessStatus, 'ready');
+    assert.strictEqual(Boolean(github.repositories[httpWorkUnit.repoName].collaborators['http-added-student']), true);
 
     response = await httpRequest(server, jar, '/repo/admin?auditQuery=assignment.created');
     assert.strictEqual(response.status, 200);
@@ -1157,7 +1210,6 @@ async function httpTests(testDirectory) {
     assert.strictEqual(response.status, 200, 'health checks must use constant-size readiness state');
     store.snapshot = originalSnapshot;
 
-    const httpWorkUnit = (await store.snapshot()).workUnits[0];
     response = await httpRequest(server, jar, '/repo/admin/work-units/' + httpWorkUnit.id + '/delete', {
       method: 'POST',
       body: encodeForm({ csrf: staffCsrf, confirm: 'wrong-name' })

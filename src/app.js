@@ -639,6 +639,17 @@ function createRouter(overrides) {
     return res.redirect(config.basePath + '/admin');
   }));
 
+  router.post('/admin/work-units/:workUnitId/members', requireCsrf, requireAdmin, requireGithubActionAllowance, asyncRoute(async function adminAddMember(req, res) {
+    if (req.body.confirm !== 'add') {
+      throw new util.AppError('Confirm the team-member addition before continuing.', 400, 'member_addition_not_confirmed');
+    }
+    const result = await service.addTeamMemberByLogin(req.params.workUnitId, req.body.githubLogin, 'admin');
+    setFlash(req, allAccessReady(result) ? 'success' : 'error', allAccessReady(result)
+      ? 'Student added and repository access synchronized.'
+      : 'Student added, but repository access is pending or needs a retry.');
+    return res.redirect(config.basePath + '/admin');
+  }));
+
   router.post('/admin/work-units/:workUnitId/members/:userId/retry', requireCsrf, requireAdmin, requireGithubActionAllowance, asyncRoute(async function adminRetryMember(req, res) {
     await service.syncMemberAccess(req.params.workUnitId, req.params.userId);
     setFlash(req, 'success', 'Member access synchronization attempted.');

@@ -454,10 +454,19 @@ function adminWorkUnit(options, workUnit) {
   const summaryStatus = workUnit.lifecycle && workUnit.lifecycle !== 'active'
     ? workUnit.lifecycle
     : (workUnit.repoError || writeupError ? 'verification_error' : (writeupPending ? 'provisioning' : workUnit.repoStatus));
-  return '<details class="admin-unit"' + (workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' || deleting || pending ? ' open' : '') + '><summary>' +
+  return '<details class="admin-unit"' + (adminWorkUnitNeedsAttention(workUnit) ? ' open' : '') + '><summary>' +
     '<strong>' + escapeHtml(workUnit.assignment.slug) + ' · ' + escapeHtml(workUnit.displayName) + '</strong> ' + statusLabel(summaryStatus) +
     ' <span class="muted">' + escapeHtml(workUnit.repoName) + '</span></summary><div class="admin-unit-body">' + rename +
     '<h4>Members</h4>' + members + addMember + (active ? pending : '') + (deleting ? '' : repositoryPanel(options, workUnit, active, true)) + release + deletion + '</div></details>';
+}
+
+function adminWorkUnitNeedsAttention(workUnit) {
+  const pendingRequest = workUnit.requests.some(function pending(item) {
+    return item.status === 'pending';
+  });
+  const writeupError = workUnit.writeupEnabled && (workUnit.writeupRepoError || workUnit.writeupPagesError);
+  return Boolean(workUnit.repoStatus === 'error' || writeupError || workUnit.lifecycle === 'release_pending' ||
+    workUnit.lifecycle === 'deletion_pending' || pendingRequest);
 }
 
 function adminPage(options) {
@@ -491,7 +500,21 @@ function adminPage(options) {
       '<form method="post" action="' + options.basePath + '/admin/assignments/' + item.id + '/' + archiveAction + '">' + csrfField(options.csrf) +
       '<button class="button secondary small" type="submit">' + archiveLabel + '</button></form>' + retry + '</div>' + deletion + '</div></details>';
   }).join('');
-  const units = options.adminView.workUnits.map(function unit(item) { return adminWorkUnit(options, item); }).join('');
+  const unitGroups = options.adminView.assignments.map(function assignmentGroup(assignment) {
+    const assignmentUnits = options.adminView.workUnits.filter(function forAssignment(workUnit) {
+      return workUnit.assignmentId === assignment.id;
+    });
+    if (!assignmentUnits.length) {
+      return '';
+    }
+    const units = assignmentUnits.map(function unit(item) {
+      return adminWorkUnit(options, item);
+    }).join('');
+    const needsAttention = assignmentUnits.some(adminWorkUnitNeedsAttention);
+    return '<details class="admin-unit-group"' + (needsAttention ? ' open' : '') + '><summary><strong>' + escapeHtml(assignment.slug) +
+      '</strong> <span class="muted">' + escapeHtml(assignmentUnits.length) + ' ' +
+      (assignmentUnits.length === 1 ? 'team' : 'teams') + '</span></summary><div class="admin-unit-group-body">' + units + '</div></details>';
+  }).join('');
   const audit = options.adminView.audit.map(function event(item) {
     const details = item.details || {};
     const detailValues = [details.assignmentSlug || details.slug, details.teamName, details.login, details.repoName, details.writeupRepoName].filter(function present(value, index, values) {
@@ -531,7 +554,7 @@ function adminPage(options) {
       '<p class="lede">Configure assignment templates and inspect repository/team state.</p></section>' +
       '<section class="panel"><h2>Add assignment</h2>' + assignmentForm(options, null) + '</section>' +
       '<section class="admin-section"><h2>Assignments</h2>' + (assignments || '<p class="muted">No assignments configured.</p>') + '</section>' +
-      '<section class="admin-section"><h2>Teams and repositories</h2>' + userSuggestions + (units || '<p class="muted">No repositories created.</p>') + '</section>' +
+      '<section class="admin-section"><h2>Teams and repositories</h2>' + userSuggestions + (unitGroups || '<p class="muted">No repositories created.</p>') + '</section>' +
       '<section class="admin-section" id="activity-log"><h2>Recent activity</h2>' + auditSearch + auditSummary +
       '<div class="table-scroll"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody>' +
       (audit || '<tr><td colspan="4">No matching activity.</td></tr>') + '</tbody></table></div>' + auditPages + '</section>'

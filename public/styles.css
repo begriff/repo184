@@ -227,6 +227,10 @@ input:focus, select:focus, button:focus, a:focus, summary:focus {
 .admin-assignment[open] > summary, .admin-unit[open] > summary { border-bottom: 1px solid #ccd3da; background: #f3f5f7; }
 .admin-assignment .admin-form, .admin-unit-body { padding: 16px; }
 .admin-assignment-controls { border-top: 1px solid #ccd3da; padding: 16px; }
+.admin-unit-group { margin-bottom: 12px; border: 1px solid #aeb8c2; }
+.admin-unit-group > summary { padding: 13px 14px; background: #f3f5f7; }
+.admin-unit-group[open] > summary { border-bottom: 1px solid #aeb8c2; }
+.admin-unit-group-body { padding: 12px; }
 .inline-controls input { max-width: 320px; }
 .danger-zone { margin-top: 18px; border-top: 1px solid #ce9696; padding-top: 12px; }
 .danger-zone h4, .danger-zone label { color: #7d1616; }

@@ -1156,6 +1156,8 @@ async function httpTests(testDirectory) {
     assert(response.body.indexOf('Generate a public write-up repository') !== -1);
     assert(response.body.indexOf('Archive assignment') !== -1);
     assert(response.body.indexOf('Delete team and repositories') !== -1);
+    assert(response.body.indexOf('class="admin-unit-group"') !== -1);
+    assert(response.body.indexOf('<strong>hw0</strong> <span class="muted">1 team</span>') !== -1);
     assert(response.body.indexOf('Add existing Repo184 student') !== -1);
     assert(response.body.indexOf('name="githubLogin"') !== -1);
     assert(response.body.indexOf('value="http-added-student"') !== -1);
